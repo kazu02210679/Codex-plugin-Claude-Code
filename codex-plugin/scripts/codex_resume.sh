@@ -16,7 +16,7 @@
 #
 # Env:
 #   CODEX_RESUME_MODE  resume|fresh  (default: resume, falls back to fresh)
-#   plus the same overrides as codex_run.sh (CODEX_MODEL/SANDBOX/APPROVAL/...).
+#   plus the same overrides as codex_run.sh (CODEX_MODEL, CODEX_SANDBOX, ...).
 set -euo pipefail
 
 die() { printf 'codex_resume: %s\n' "$1" >&2; exit 2; }
@@ -33,11 +33,10 @@ command -v codex >/dev/null 2>&1 || die "the 'codex' CLI is not installed or not
 [ -d "$WORKDIR" ] || die "workdir not found: $WORKDIR"
 
 CODEX_SANDBOX="${CODEX_SANDBOX:-workspace-write}"
-CODEX_APPROVAL="${CODEX_APPROVAL:-never}"
 CODEX_RESUME_MODE="${CODEX_RESUME_MODE:-resume}"
 mkdir -p "$OUTDIR"
 
-common=(--cd "$WORKDIR" --sandbox "$CODEX_SANDBOX" --ask-for-approval "$CODEX_APPROVAL"
+common=(--cd "$WORKDIR" --sandbox "$CODEX_SANDBOX"
         --output-last-message "$OUTDIR/report.md" --json)
 [ -n "${CODEX_MODEL:-}" ] && common+=(-m "$CODEX_MODEL")
 

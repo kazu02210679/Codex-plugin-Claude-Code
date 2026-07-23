@@ -62,10 +62,12 @@ Run the wrapper (this executes `codex exec` headless):
 
 It prints `REPORT`, `EVENTS`, and `META` paths and exits with Codex's exit code.
 Optional env before the call: `CODEX_MODEL`, `CODEX_SANDBOX` (default
-`workspace-write`), `CODEX_APPROVAL` (default `never`).
+`workspace-write`; also `read-only` or `danger-full-access`).
 
-Only use `never` approval inside an isolated/container environment — it lets
-Codex edit and run commands without prompting.
+`codex exec` is non-interactive, so there is no approval prompt — the
+`--sandbox` mode bounds what Codex may touch. `workspace-write` lets it edit and
+run commands within the workspace; use `danger-full-access` only inside an
+isolated/container environment.
 
 ## Phase 5 — Delivery judgment (Claude)
 

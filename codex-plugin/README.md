@@ -46,8 +46,9 @@ directly. After install, restart Claude Code so the commands/skill register.
 - **Codex CLI** installed and on `PATH`, authenticated (`OPENAI_API_KEY` or
   `codex login`). Codex billing/auth is separate from Claude's.
 - Verify flag names once with `codex exec --help`. The wrapper relies on:
-  `--cd`, `--sandbox`, `--ask-for-approval`, `--output-last-message`, `--json`,
-  `-m`. If your version differs, adjust `scripts/codex_run.sh`.
+  `--cd`, `--sandbox`, `--output-last-message`, `--json`, `-m`. If your version
+  differs, adjust `scripts/codex_run.sh`. (`codex exec` is non-interactive, so
+  there is no approval flag — the `--sandbox` mode governs what Codex may touch.)
 
 ## Usage
 
@@ -72,14 +73,16 @@ scripts/codex_run.sh <instruction_file> <workdir> [outdir]
 scripts/codex_resume.sh <hint_file> <workdir> <outdir> [prev_report]
 ```
 
-Env overrides: `CODEX_MODEL`, `CODEX_SANDBOX` (default `workspace-write`),
-`CODEX_APPROVAL` (default `never`), `CODEX_EXTRA_ARGS`, `CODEX_RESUME_MODE`
-(`resume` | `fresh`).
+Env overrides: `CODEX_MODEL`, `CODEX_SANDBOX` (`read-only` | `workspace-write`
+| `danger-full-access`, default `workspace-write`), `CODEX_EXTRA_ARGS`,
+`CODEX_RESUME_MODE` (`resume` | `fresh`).
 
 ## Safety notes
 
-- `--ask-for-approval never` lets Codex edit files and run commands without
-  prompting — use it only in an isolated/container environment.
+- `codex exec` runs non-interactively (no approval prompts); the `--sandbox`
+  mode is what bounds Codex. The default `workspace-write` lets it edit files
+  and run commands within the workspace. Use `read-only` to trial without
+  writes, and avoid `danger-full-access` outside an isolated/container env.
 - Claude **always re-verifies** the acceptance criteria by actually running the
   checks; Codex's `report.md` is treated as a claim, not proof.
 - Delegating spends tokens on both Claude and Codex. Small tasks may be cheaper
