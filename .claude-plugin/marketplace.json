@@ -1,0 +1,17 @@
+{
+  "name": "kazu-drive",
+  "owner": {
+    "name": "kazu"
+  },
+  "metadata": {
+    "description": "Personal Claude Code marketplace hosted in the Codex-plugin-Claude-Code repo.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "codex-plugin",
+      "source": "./codex-plugin",
+      "description": "Claude Code orchestrates; OpenAI Codex implements. Claude owns requirements, design direction, acceptance criteria and delivery judgment; Codex does code investigation, implementation design, coding, tests and reporting."
+    }
+  ]
+}
