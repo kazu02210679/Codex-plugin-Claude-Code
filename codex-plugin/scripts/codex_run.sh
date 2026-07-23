@@ -24,14 +24,17 @@
 #
 # Env overrides (all optional):
 #   CODEX_MODEL      -> passed as `-m` (e.g. o4-mini, gpt-5-codex).
-#   CODEX_SANDBOX    -> `--sandbox` value. Default: workspace-write.
-#   CODEX_APPROVAL   -> `--ask-for-approval` value. Default: never.
+#   CODEX_SANDBOX    -> `--sandbox` value: read-only | workspace-write |
+#                       danger-full-access. Default: workspace-write.
 #   CODEX_EXTRA_ARGS -> extra raw args appended to `codex exec`.
 #
-# NOTE: flag names below match the OpenAI Codex CLI as of this writing. If your
-# installed Codex differs, run `codex exec --help` and adjust. The five things
-# this wrapper needs are: (1) a prompt, (2) a working directory, (3) sandbox
-# level, (4) approval policy, (5) a way to capture the final message + JSON.
+# NOTE: `codex exec` is non-interactive, so there is no approval prompt; what
+# Codex may read/write/run is governed entirely by `--sandbox`. The flag names
+# below match the OpenAI Codex CLI as of this writing (verified against
+# codex-cli 0.144.x). If your installed Codex differs, run `codex exec --help`
+# and adjust. The four things this wrapper needs are: (1) a prompt, (2) a
+# working directory, (3) sandbox level, (4) a way to capture the final
+# message + JSON.
 set -euo pipefail
 
 die() { printf 'codex_run: %s\n' "$1" >&2; exit 2; }
@@ -47,7 +50,6 @@ command -v codex >/dev/null 2>&1 || die "the 'codex' CLI is not installed or not
 [ -d "$WORKDIR" ]     || die "workdir not found: $WORKDIR"
 
 CODEX_SANDBOX="${CODEX_SANDBOX:-workspace-write}"
-CODEX_APPROVAL="${CODEX_APPROVAL:-never}"
 
 mkdir -p "$OUTDIR"
 
@@ -55,7 +57,6 @@ mkdir -p "$OUTDIR"
 args=(exec
   --cd "$WORKDIR"
   --sandbox "$CODEX_SANDBOX"
-  --ask-for-approval "$CODEX_APPROVAL"
   --output-last-message "$OUTDIR/report.md"
   --json
 )
@@ -63,8 +64,8 @@ args=(exec
 # shellcheck disable=SC2206
 [ -n "${CODEX_EXTRA_ARGS:-}" ] && args+=(${CODEX_EXTRA_ARGS})
 
-printf 'codex_run: starting Codex\n  workdir : %s\n  sandbox : %s\n  approval: %s\n  outdir  : %s\n' \
-  "$WORKDIR" "$CODEX_SANDBOX" "$CODEX_APPROVAL" "$OUTDIR" >&2
+printf 'codex_run: starting Codex\n  workdir : %s\n  sandbox : %s\n  outdir  : %s\n' \
+  "$WORKDIR" "$CODEX_SANDBOX" "$OUTDIR" >&2
 
 set +e
 codex "${args[@]}" "$(cat "$INSTRUCTION")" \
@@ -77,7 +78,6 @@ cat >"$OUTDIR/meta.json" <<JSON
   "instruction": "$INSTRUCTION",
   "workdir": "$WORKDIR",
   "sandbox": "$CODEX_SANDBOX",
-  "approval": "$CODEX_APPROVAL",
   "model": "${CODEX_MODEL:-default}",
   "exit_code": $RC,
   "finished_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
