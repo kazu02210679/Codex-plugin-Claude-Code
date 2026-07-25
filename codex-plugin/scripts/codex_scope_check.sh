@@ -12,24 +12,38 @@
 # not who edited it — so it catches the orchestrator quietly fixing production
 # code just as well as it catches Codex wandering out of scope.
 #
+# Orchestration metadata (the plan directory, run artifacts) is excluded: it is
+# written by the orchestrator throughout the loop and is not product. Codex is
+# kept out of it by the fingerprint check in codex_run.sh, not by this gate.
+#
 # Usage:
 #   codex_scope_check.sh <allowlist_file> <workdir> [base_ref]
 #
 # Args:
 #   allowlist_file  One glob per line. Blank lines and `#` comments ignored.
+#                   Pass the FROZEN copy under <rundir>/allowlist, not the
+#                   plan's live file — see codex_run.sh.
 #   workdir         Git repository to inspect.
 #   base_ref        Commit to diff against. Default: HEAD. Pass the empty
-#                   string for a repository with no commits yet.
+#                   string only for a repository with no commits yet.
 #
 # Patterns are matched with bash `[[ str == glob ]]`, where `*` also matches
 # `/`. So `src/*` covers the whole `src` subtree, and `*.py` covers every Python
 # file in the repo. Anchor a pattern by writing the full path.
+#
+# Renames are checked on both sides. `git diff --name-only` reports only the
+# destination of a rename, which would let `git mv out-of-scope/x.py allowed/y.py`
+# delete an out-of-scope file invisibly; --name-status exposes both paths and
+# both must be allowed.
 #
 # Exit codes:
 #   0  every changed file is covered by the allowlist
 #   1  at least one changed file is outside it
 #   2  usage / environment error
 set -euo pipefail
+
+# shellcheck source=codex_lib.sh
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/codex_lib.sh"
 
 die() { printf 'codex_scope_check: %s\n' "$1" >&2; exit 2; }
 
@@ -57,11 +71,6 @@ done <"$ALLOWLIST"
 [ "${#patterns[@]}" -gt 0 ] || die "allowlist has no patterns: $ALLOWLIST"
 
 # --- collect changed files --------------------------------------------------
-# `git diff <base>` covers staged and unstaged edits to tracked files;
-# `ls-files --others` covers new files Codex created. Together they describe
-# everything the run touched. Gitignored paths (including the run directory)
-# are excluded by --exclude-standard.
-#
 # An empty base ref means "no commits yet", where every file is untracked and
 # the diff half is genuinely unnecessary. Accepting an empty base in a
 # repository that DOES have commits would silently skip every tracked-file
@@ -73,20 +82,51 @@ if [ -z "$BASE" ]; then
   printf 'scope: note — no commits in %s yet; checking untracked files only\n' "$WORKDIR"
 fi
 
+raw=()
+if [ -n "$BASE" ]; then
+  # -M turns renames into R entries carrying both paths; -z keeps paths with
+  # spaces or newlines intact.
+  fields=()
+  mapfile -d '' -t fields < <(git -C "$WORKDIR" diff -M --name-status -z "$BASE" -- || true)
+  i=0
+  while [ "$i" -lt "${#fields[@]}" ]; do
+    st="${fields[$i]}"; i=$((i + 1))
+    [ -n "$st" ] || continue
+    case "$st" in
+      R*|C*)
+        # old path and new path: a rename out of scope is still a change to the
+        # out-of-scope file.
+        [ "$i" -lt "${#fields[@]}" ] && { raw+=("${fields[$i]}"); i=$((i + 1)); }
+        [ "$i" -lt "${#fields[@]}" ] && { raw+=("${fields[$i]}"); i=$((i + 1)); }
+        ;;
+      *)
+        [ "$i" -lt "${#fields[@]}" ] && { raw+=("${fields[$i]}"); i=$((i + 1)); }
+        ;;
+    esac
+  done
+fi
+
+# New files Codex created. Gitignored paths (including the run directory) are
+# excluded by --exclude-standard.
+while IFS= read -r -d '' f; do
+  [ -n "$f" ] && raw+=("$f")
+done < <(git -C "$WORKDIR" ls-files --others --exclude-standard -z || true)
+
+# Drop orchestration metadata and de-duplicate.
 changed=()
-while IFS= read -r f; do
-  [ -n "$f" ] && changed+=("$f")
-done < <(
-  {
-    if [ -n "$BASE" ]; then
-      git -C "$WORKDIR" diff --name-only "$BASE" --
-    fi
-    git -C "$WORKDIR" ls-files --others --exclude-standard
-  } | sort -u
-)
+if [ "${#raw[@]}" -gt 0 ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] && changed+=("$f")
+  done < <(
+    for f in "${raw[@]}"; do
+      codex_is_meta_path "$f" && continue
+      printf '%s\n' "$f"
+    done | LC_ALL=C sort -u
+  )
+fi
 
 if [ "${#changed[@]}" -eq 0 ]; then
-  printf 'scope: OK — no files changed\n'
+  printf 'scope: OK — no product files changed\n'
   exit 0
 fi
 

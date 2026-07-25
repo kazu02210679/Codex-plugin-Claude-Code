@@ -11,32 +11,31 @@
 # escalates, every attempt is still on disk to explain what was tried.
 #
 # Continuation mode is decided BEFORE spending a run:
-#   auto   (default) probe `codex exec resume --help`; use native session
-#          continuation when the installed CLI supports it, otherwise fresh.
-#   resume force native continuation; a failure is reported as-is.
+#   auto   (default) resume the exact session recorded in <rundir>/thread_id
+#          when the CLI supports it; otherwise fresh.
+#   resume force targeted resume; fails if no thread id was captured.
+#   last   resume whatever session the CLI saw most recently. Only correct if
+#          nothing else has used Codex in this workdir since — another terminal
+#          or agent would silently receive the hint instead.
 #   fresh  run a fresh `codex exec` whose prompt carries the previous report
 #          and the hint — portable, no session state needed.
 #
 # Usage:
 #   codex_resume.sh <hint_file> <workdir> <rundir> [prev_report]
 #
-# Args:
-#   hint_file    Root cause + minimal guidance, written by the orchestrator.
-#   workdir      Repository/directory Codex may modify.
-#   rundir       The run directory printed by codex_run.sh (contains attempt-N).
-#   prev_report  Override the report fed back to Codex. Default: the previous
-#                attempt's report.md.
-#
 # Env:
-#   CODEX_RESUME_MODE  auto|resume|fresh  (default: auto)
+#   CODEX_RESUME_MODE   auto|resume|last|fresh  (default: auto)
+#   CODEX_MAX_ATTEMPTS  refuse past this many attempts (default 3, 0 = no cap)
 #   plus the same overrides as codex_run.sh (CODEX_MODEL, CODEX_SANDBOX,
-#   CODEX_ALLOWLIST, ...).
+#   CODEX_EXTRA_ARGS, CODEX_TIMEOUT, CODEX_ALLOWLIST, ...).
 #
 # Exit codes: same contract as codex_run.sh (0 ok, 2 usage, 3 out of scope,
-# otherwise Codex's own exit code).
+# 4 metadata tampered, otherwise Codex's own exit code).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=codex_lib.sh
+. "$SCRIPT_DIR/codex_lib.sh"
 
 die() { printf 'codex_resume: %s\n' "$1" >&2; exit 2; }
 
@@ -63,6 +62,15 @@ done
 
 PREV="$RUNDIR/attempt-$LAST_N"
 N=$((LAST_N + 1))
+
+# The skill caps the hint loop at three attempts and escalates. Enforce it here
+# too: a cap that lives only in prose is one an agent can lose track of, and
+# each extra attempt costs a full Codex run.
+MAX="${CODEX_MAX_ATTEMPTS:-3}"
+if [ "$MAX" != "0" ] && [ "$N" -gt "$MAX" ]; then
+  die "attempt $N would exceed CODEX_MAX_ATTEMPTS=$MAX. Codex is not converging — stop and escalate to the user with the reports in $RUNDIR, or raise the cap deliberately."
+fi
+
 ATTEMPT="$RUNDIR/attempt-$N"
 PREV_REPORT="${4:-$PREV/report.md}"
 mkdir -p "$ATTEMPT"
@@ -72,20 +80,35 @@ mkdir -p "$ATTEMPT"
 BASE_COMMIT=""
 [ -f "$RUNDIR/base_commit" ] && BASE_COMMIT="$(cat "$RUNDIR/base_commit")"
 
+THREAD_ID=""
+[ -f "$RUNDIR/thread_id" ] && THREAD_ID="$(tr -d '[:space:]' <"$RUNDIR/thread_id")"
+
 ALLOWLIST="${CODEX_ALLOWLIST:-}"
 if [ -z "$ALLOWLIST" ] && [ -f "$RUNDIR/allowlist" ]; then
   ALLOWLIST="$RUNDIR/allowlist"
 fi
 
 CODEX_SANDBOX="${CODEX_SANDBOX:-workspace-write}"
+CODEX_TIMEOUT="${CODEX_TIMEOUT:-3600}"
 CODEX_RESUME_MODE="${CODEX_RESUME_MODE:-auto}"
 
+# Shared options belong to `exec`, so they go between `exec` and the `resume`
+# subcommand. Placing them after `resume` makes the CLI reject them.
 common=(--cd "$WORKDIR" --sandbox "$CODEX_SANDBOX"
         --output-last-message "$ATTEMPT/report.md" --json)
 [ -n "${CODEX_MODEL:-}" ] && common+=(-m "$CODEX_MODEL")
+# shellcheck disable=SC2206
+[ -n "${CODEX_EXTRA_ARGS:-}" ] && common+=(${CODEX_EXTRA_ARGS})
+
+TIMEOUT_CMD=()
+while IFS= read -r t; do [ -n "$t" ] && TIMEOUT_CMD+=("$t"); done < <(codex_timeout_prefix "$CODEX_TIMEOUT")
 
 run_resume() {
-  codex exec resume --last "${common[@]}" "$(cat "$HINT")"
+  "${TIMEOUT_CMD[@]}" codex exec "${common[@]}" resume "$THREAD_ID" "$(cat "$HINT")" </dev/null
+}
+
+run_last() {
+  "${TIMEOUT_CMD[@]}" codex exec "${common[@]}" resume --last "$(cat "$HINT")" </dev/null
 }
 
 run_fresh() {
@@ -101,40 +124,63 @@ $(cat "$HINT")
 
 Do not restart from scratch or make large unrequested changes. Make the minimal
 change that unblocks the task, re-run the tests, and report what you did."
-  codex exec "${common[@]}" "$prompt"
+  "${TIMEOUT_CMD[@]}" codex exec "${common[@]}" "$prompt" </dev/null
 }
 
 # --- pick the mode up front -------------------------------------------------
 # Deciding by probing the CLI (rather than pattern-matching stderr after a
 # failed run) keeps a plain task failure from being misread as "resume is
 # unsupported" and silently charged for a second, redundant run.
+supports_resume() { codex exec resume --help >/dev/null 2>&1; }
+
 case "$CODEX_RESUME_MODE" in
-  fresh)  MODE=fresh ;;
-  resume) MODE=resume ;;
+  fresh) MODE=fresh ;;
+  last)  MODE=last ;;
+  resume)
+    [ -n "$THREAD_ID" ] || die "CODEX_RESUME_MODE=resume but no session id was captured in $RUNDIR/thread_id. Use fresh mode, or last if you are certain nothing else has used Codex here."
+    MODE=resume
+    ;;
   auto)
-    if codex exec resume --help >/dev/null 2>&1; then
+    if [ -n "$THREAD_ID" ] && supports_resume; then
       MODE=resume
     else
       MODE=fresh
-      printf 'codex_resume: this Codex CLI has no `exec resume` — using fresh mode\n' >&2
+      if [ -z "$THREAD_ID" ]; then
+        printf 'codex_resume: no session id recorded — using fresh mode\n' >&2
+      else
+        printf 'codex_resume: this Codex CLI has no `exec resume` — using fresh mode\n' >&2
+      fi
     fi
     ;;
-  *) die "unknown CODEX_RESUME_MODE: '$CODEX_RESUME_MODE' (expected auto|resume|fresh)" ;;
+  *) die "unknown CODEX_RESUME_MODE: '$CODEX_RESUME_MODE' (expected auto|resume|last|fresh)" ;;
 esac
 
-printf 'codex_resume: continuing from attempt-%s\n  hint    : %s\n  mode    : %s\n  attempt : %s\n  scope   : %s\n' \
-  "$LAST_N" "$HINT" "$MODE" "$ATTEMPT" "${ALLOWLIST:-(none)}" >&2
+printf 'codex_resume: continuing from attempt-%s\n  hint    : %s\n  mode    : %s%s\n  attempt : %s (cap %s)\n  scope   : %s\n' \
+  "$LAST_N" "$HINT" "$MODE" "${THREAD_ID:+ [$THREAD_ID]}" "$ATTEMPT" "$MAX" "${ALLOWLIST:-(none)}" >&2
+
+META_BEFORE="$(codex_meta_fingerprint "$WORKDIR")"
 
 set +e
-if [ "$MODE" = "fresh" ]; then
-  run_fresh  >"$ATTEMPT/events.jsonl" 2>"$ATTEMPT/stderr.log"
-else
-  run_resume >"$ATTEMPT/events.jsonl" 2>"$ATTEMPT/stderr.log"
-fi
+case "$MODE" in
+  fresh)  run_fresh  >"$ATTEMPT/events.jsonl" 2>"$ATTEMPT/stderr.log" ;;
+  last)   run_last   >"$ATTEMPT/events.jsonl" 2>"$ATTEMPT/stderr.log" ;;
+  resume) run_resume >"$ATTEMPT/events.jsonl" 2>"$ATTEMPT/stderr.log" ;;
+esac
 RC=$?
 set -e
+[ "$RC" -eq 124 ] && printf 'codex_resume: Codex hit the %ss timeout\n' "$CODEX_TIMEOUT" >&2
 
 [ -f "$ATTEMPT/report.md" ] || printf '(no final message captured; see stderr.log)\n' >"$ATTEMPT/report.md"
+
+NEW_ID="$(codex_thread_id "$ATTEMPT/events.jsonl")"
+[ -n "$NEW_ID" ] && printf '%s\n' "$NEW_ID" >"$RUNDIR/thread_id"
+
+META_AFTER="$(codex_meta_fingerprint "$WORKDIR")"
+META_OK=true
+if [ "$META_BEFORE" != "$META_AFTER" ]; then
+  META_OK=false
+  printf 'codex_resume: FAIL — Codex modified %s/ during the run.\n' "$CODEX_META_DIR" >&2
+fi
 
 # --- scope gate -------------------------------------------------------------
 SCOPE_RC=0
@@ -155,8 +201,10 @@ cat >"$ATTEMPT/meta.json" <<JSON
   "attempt": $N,
   "resumed_from": $LAST_N,
   "mode": "$MODE",
+  "thread_id": "$THREAD_ID",
   "base_commit": "$BASE_COMMIT",
   "allowlist": "${ALLOWLIST:-}",
+  "meta_intact": $META_OK,
   "scope_ok": $([ "$SCOPE_RC" -eq 0 ] && echo true || echo false),
   "sandbox": "$CODEX_SANDBOX",
   "model": "${CODEX_MODEL:-default}",
@@ -168,6 +216,7 @@ JSON
 printf 'codex_resume: done (exit=%s)\n  REPORT: %s\n  EVENTS: %s\n  META  : %s\n' \
   "$RC" "$ATTEMPT/report.md" "$ATTEMPT/events.jsonl" "$ATTEMPT/meta.json" >&2
 
+[ "$META_OK" = "true" ] || exit 4
 if [ "$RC" -eq 0 ] && [ "$SCOPE_RC" -ne 0 ]; then
   exit 3
 fi

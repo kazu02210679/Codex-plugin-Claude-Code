@@ -42,7 +42,9 @@ Arguments: `$ARGUMENTS`
    tests, lint and type checks it names; read the diff. Never pass on the
    report alone. Check `scope.txt` too: exit code 3 means Codex succeeded but
    edited files outside the allowlist, which is a failure even when the tests
-   are green.
+   are green. Exit code 4 means Codex edited the plan directory — do not retry
+   it, read the diff and find out what it was trying to change about its own
+   instructions.
 
 5. If anything fails, scope is violated, or Codex reports "blocked": diagnose
    from `events.jsonl` / `stderr.log` / the failing output, write
@@ -52,16 +54,17 @@ Arguments: `$ARGUMENTS`
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex_resume.sh" <plan_dir>/T<N>.hint-M.md <workdir> <RUNDIR>
    ```
    Each call opens a new attempt directory; earlier attempts stay intact. Back
-   to step 3. Cap at 3 attempts for the task, then stop and escalate to the
-   user with every attempt's report and what you tried.
+   to step 3. The script refuses a fourth attempt — when it does, stop and
+   escalate to the user with every attempt's report and what you tried.
 
 6. Close the task out:
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex_commit.sh" <plan_dir> T<N> <workdir> <RUNDIR>
    ```
-   This re-checks scope, runs the test gate, and makes exactly one commit — and
-   refuses to commit if either fails. A refusal is not something to work
-   around: it means the task is not done, so go back to step 5.
+   It checks scope, runs the tests, checks scope again, and makes exactly one
+   commit. Refusals: `1` tests failed or nothing changed, `3` out of scope, `5`
+   HEAD moved during the task. A refusal is not something to work around: it
+   means the task is not done, so go back to step 5.
 
    Then append to `<plan_dir>/interfaces.md` whatever this task established
    that a later one will call: function signatures, types, endpoints, config

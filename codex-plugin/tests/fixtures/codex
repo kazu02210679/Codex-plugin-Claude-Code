@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Fake Codex CLI. Records how it was invoked so the wrappers' argument
+# construction can be asserted on, and simulates the side effects a real run
+# would have on the worktree.
+#
+#   FAKE_CODEX_NO_RESUME=1   `exec resume --help` fails (CLI without resume)
+#   FAKE_CODEX_TOUCH="a b"   files to append to, relative to --cd
+#   FAKE_CODEX_RC=n          exit code for a run
+#   FAKE_CODEX_THREAD=id     thread id emitted in the event stream
+#   FAKE_CODEX_LOG=path      append one line per invocation: argv, then prompt
+#   FAKE_CODEX_STDIN_LOG=p   record whatever arrived on stdin
+set -uo pipefail
+
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then
+  if [ "${FAKE_CODEX_NO_RESUME:-0}" = "1" ]; then
+    echo "error: unrecognized subcommand 'resume'" >&2; exit 1
+  fi
+  echo "Usage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]"; exit 0
+fi
+
+[ -n "${FAKE_CODEX_LOG:-}" ] && printf 'ARGV:%s\n' "$*" >>"$FAKE_CODEX_LOG"
+if [ -n "${FAKE_CODEX_STDIN_LOG:-}" ]; then
+  if [ -t 0 ]; then printf 'STDIN:tty\n' >>"$FAKE_CODEX_STDIN_LOG"
+  else printf 'STDIN:%s\n' "$(cat)" >>"$FAKE_CODEX_STDIN_LOG"; fi
+fi
+
+MODE=fresh
+cd_dir="."
+last_msg=""
+prompt=""
+args=("$@")
+i=0
+while [ $i -lt ${#args[@]} ]; do
+  case "${args[$i]}" in
+    resume) MODE=resume ;;
+    --cd) i=$((i + 1)); cd_dir="${args[$i]}" ;;
+    --output-last-message) i=$((i + 1)); last_msg="${args[$i]}" ;;
+    --sandbox|-m) i=$((i + 1)) ;;
+    --json|--last|exec) ;;
+    *) prompt="${args[$i]}" ;;
+  esac
+  i=$((i + 1))
+done
+
+[ -n "${FAKE_CODEX_LOG:-}" ] && printf 'PROMPT:%s\n' "$prompt" >>"$FAKE_CODEX_LOG"
+
+for f in ${FAKE_CODEX_TOUCH:-}; do
+  mkdir -p "$cd_dir/$(dirname "$f")"
+  printf 'edited by fake codex (%s)\n' "$MODE" >>"$cd_dir/$f"
+done
+
+printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_CODEX_THREAD:-thr-abc123}"
+printf '{"type":"item.completed","mode":"%s"}\n' "$MODE"
+printf 'fake codex stderr (%s)\n' "$MODE" >&2
+[ -n "$last_msg" ] && printf '# report (%s)\nTouched: %s\n' "$MODE" "${FAKE_CODEX_TOUCH:-none}" >"$last_msg"
+exit "${FAKE_CODEX_RC:-0}"

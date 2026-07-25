@@ -29,14 +29,24 @@ Roles:
 
 Plugin scripts live at `${CLAUDE_PLUGIN_ROOT}/scripts/`.
 
-Four of the rules here are enforced by scripts rather than by your good
+Most of the rules here are enforced by scripts rather than by your good
 intentions: `codex_run.sh` refuses to start on the default branch or from a
-dirty tree; `codex_scope_check.sh` fails a run whose diff leaves the
-allowlist; `codex_commit.sh` refuses to commit when the tests are not green;
+dirty tree; `codex_scope_check.sh` fails a run whose diff leaves the allowlist;
+`codex_commit.sh` refuses to commit when the tests are not green, or when
+something committed mid-task; `codex_resume.sh` refuses past the attempt cap;
 and `codex_status.sh` reads progress back out of git rather than out of your
 memory of it. The scope check reads the worktree and does not care who made the
 edit, so it holds you to "Claude does not write the production code" exactly as
 it holds Codex to its declared scope.
+
+**Two kinds of file, two different rules.** *Product* files are what Codex is
+asked to change — governed by the allowlist, and the subject of the diff you
+review. *Orchestration metadata* is the plan directory and the run artifacts:
+you write there constantly as the loop runs, so it is exempt from the dirty
+preflight and from the scope gate. Codex is kept out of it a different way — a
+fingerprint taken across every run, which fails the run (exit 4) if Codex
+edited the plan. An allowlist Codex can widen would not be a constraint, so
+the gate reads the frozen copy in the run directory, never the live file.
 
 ## Phase 1 — Requirements (Claude)
 
@@ -89,13 +99,20 @@ Every `T<N>.md` MUST contain:
 5. A stuck-protocol line: "If you hit a blocker or a spec/API conflict, do NOT
    make large unrequested changes — document the problem, the cause, and the
    minimal alternative in your report, then stop."
-6. Whatever this task needs from `interfaces.md`, quoted inline. Each task is a
-   fresh Codex session and inherits nothing from the last one.
+6. A hands-off line: "Do not create or amend commits, switch branches, rebase,
+   reset, or otherwise modify git history, and do not edit anything under
+   `.codex-instructions/`." Both are enforced — `codex_commit.sh` exits 5 if
+   HEAD moved during the task, and the run fails with exit 4 if the plan
+   directory changed — but Codex should be told, not just caught.
 
 Every `T<N>.allowlist` is one glob per line, derived from that task's in-scope
 section. This is the executable half of rule 1 — the packet asks Codex to stay
 in scope, the allowlist proves whether it did. An allowlist that is too
 generous silently removes the guard.
+
+You do not need to quote `interfaces.md` into the packets. `codex_run.sh`
+appends it to the prompt at run time, so the packets stay stable and the plan
+does not have to be rewritten mid-loop.
 
 ## Phase 4 — Delegate one task
 
@@ -110,16 +127,23 @@ before the call: `CODEX_MODEL`, `CODEX_SANDBOX` (default `workspace-write`;
 also `read-only` or `danger-full-access`), `CODEX_ALLOWLIST`.
 
 Exit codes: `0` clean, `2` preflight refusal (nothing ran), `3` Codex succeeded
-but went outside the allowlist, anything else is Codex's own code.
+but went outside the allowlist, `4` Codex edited the plan directory, anything
+else is Codex's own code.
 
 A preflight refusal is information, not an obstacle. Running on the default
 branch or over uncommitted work is what makes an unattended agent expensive to
 undo, and a dirty tree also makes the scope check meaningless because
-pre-existing edits look exactly like Codex's. After the first task a dirty tree
-means the previous task never committed — so the refusal is telling you the
-loop is off the rails, not that the check is in your way. Fix the branch or
-tree state; reach for `CODEX_ALLOW_DIRTY` / `CODEX_ALLOW_DEFAULT_BRANCH` only
-when you have a specific reason and tell the user you did.
+pre-existing edits look exactly like Codex's. Only *product* changes count, so
+the plan you just wrote never blocks the first task. After the first task a
+dirty tree means the previous task never committed — so the refusal is telling
+you the loop is off the rails, not that the check is in your way. Fix the
+branch or tree state; reach for `CODEX_ALLOW_DIRTY` /
+`CODEX_ALLOW_DEFAULT_BRANCH` only when you have a specific reason and tell the
+user you did.
+
+Exit 4 is different: it means the run edited the plan, the allowlist or the
+hints. Do not retry it — read the diff first and find out what Codex was
+trying to change about its own instructions.
 
 `codex exec` is non-interactive, so there is no approval prompt — the
 `--sandbox` mode bounds what Codex may touch. `workspace-write` lets it edit and
@@ -152,12 +176,15 @@ isolated/container environment.
    ```
 
    This opens `<RUNDIR>/attempt-M+1/`. Earlier attempts are never overwritten,
-   which is what makes the escalation in step 4 possible.
+   which is what makes the escalation in step 4 possible. The hint continues
+   the exact session the run recorded, not whatever session the machine saw
+   last — so a second agent working in the same repository cannot receive your
+   hint by accident.
 
-4. Return to Phase 5. Cap the loop (default **3** attempts per task). If it is
-   not improving after the cap, stop and escalate to the user with: what is
-   failing, what you tried, and your recommendation. Cite the attempts — they
-   are all still on disk.
+4. Return to Phase 5. The loop caps at **3** attempts per task; the script
+   refuses the fourth rather than trusting you to count. When you hit it, stop
+   and escalate to the user with: what is failing, what you tried, and your
+   recommendation. Cite the attempts — they are all still on disk.
 
 ## Phase 7 — Commit the task, then the next one
 
@@ -165,13 +192,19 @@ isolated/container environment.
 "${CLAUDE_PLUGIN_ROOT}/scripts/codex_commit.sh" <plan_dir> T<N> <workdir> <RUNDIR>
 ```
 
-Re-checks scope, runs the test gate, makes exactly one commit, and refuses if
-either gate fails. A refusal means the task is not done — go back to Phase 6
-rather than looking for a way around it.
+The run directory is required, not optional: it holds the pre-run commit and
+the frozen allowlist, and without them two of the three gates cannot run.
+
+It checks scope, runs the tests, checks scope **again** — tests write coverage
+files and snapshots, and a gate that only looked before the run would let
+`git add -A` sweep them in — then makes exactly one commit. Refusals: `1` tests
+failed or nothing changed, `3` out of scope, `5` HEAD moved during the task
+(something committed mid-run; Codex must not). A refusal means the task is not
+done — go back to Phase 6 rather than looking for a way around it.
 
 Then append to `<plan_dir>/interfaces.md` what this task established that a
 later task will call: signatures, types, endpoints, config keys, file paths.
-Then back to Phase 4 for the next task.
+The next run injects it automatically. Then back to Phase 4 for the next task.
 
 When `codex_status.sh` reports every task committed, run the **plan-level**
 acceptance checklist from `packet.md` against the finished branch — the full

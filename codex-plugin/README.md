@@ -40,8 +40,18 @@ has to verify every diff itself, and a plan-sized diff is not something anyone
 verifies honestly. Small steps also mean a mistake surfaces while it is still
 one commit deep.
 
-Four gates are mechanical rather than advisory, because they guard the failures
-a model reading a diff is worst at catching:
+The gates below are mechanical rather than advisory, because they guard the
+failures a model reading a diff is worst at catching.
+
+**Two kinds of file, two different rules.** *Product* files are what Codex is
+asked to change — governed by the allowlist, and the subject of the review.
+*Orchestration metadata* is the plan directory and the run artifacts: the
+orchestrator writes there throughout the loop, so it is exempt from the dirty
+preflight and the scope gate. Codex is kept out of it a different way — a
+fingerprint across every run, which fails the run if the plan moved. Holding
+both file kinds to one rule is what would otherwise make "keep the plan in
+version control", "refuse to start from a dirty tree" and "write a hint file
+mid-loop" mutually impossible.
 
 - **git preflight** — `codex_run.sh` refuses to start on the default branch or
   from a dirty tree. An unattended agent with write access is cheap to undo
@@ -53,14 +63,28 @@ a model reading a diff is worst at catching:
   Exit code `3` means Codex succeeded but wandered outside it, so a green test
   run cannot hide an out-of-scope diff. The check reads the worktree and does
   not care who made the edit, so it also catches the orchestrator quietly
-  fixing the code itself instead of sending a hint back.
+  fixing the code itself instead of sending a hint back. Renames are checked on
+  both paths — `git diff --name-only` reports only a rename's destination,
+  which would let `git mv out-of-scope/x.py allowed/y.py` delete a protected
+  file invisibly.
+- **plan integrity** — the gate reads a frozen copy of the allowlist taken
+  before the run, and a fingerprint over the plan directory is compared across
+  it. An allowlist Codex could widen mid-run, then pass, would not be a
+  constraint at all. Exit code `4`.
 - **commit gate** — `codex_commit.sh` runs the task's tests and refuses to
   commit unless they pass. One task, one commit; a task with no test command is
-  an error rather than a free pass.
-- **status from git** — progress is read back from `Codex-Task:` commit
-  trailers, not from a status file or the orchestrator's memory. There is no
-  second copy of the truth to drift, and a resumed session can ask where the
-  plan stands instead of guessing.
+  an error rather than a free pass. Scope is re-checked *after* the tests,
+  since tests write coverage files and snapshots that `git add -A` would
+  otherwise sweep in. Exit code `5` if anything committed mid-task.
+- **attempt cap** — the hint loop stops at three attempts per task. A cap that
+  lives only in prose is one an agent can lose track of, and each extra attempt
+  is a full Codex run.
+- **status from git** — progress is read back from `Codex-Plan:` and
+  `Codex-Task:` commit trailers, not from a status file or the orchestrator's
+  memory. There is no second copy of the truth to drift, and a resumed session
+  can ask where the plan stands instead of guessing. Both trailers are matched:
+  task ids restart at `T1` for every plan, so a branch that already carried one
+  would otherwise report the next plan's first task as done.
 
 ## Install
 
@@ -109,22 +133,42 @@ scripts/codex_run.sh <instruction_file> <workdir> [rundir]
 scripts/codex_resume.sh <hint_file> <workdir> <rundir> [prev_report]
 
 # test gate + scope gate + exactly one commit
-scripts/codex_commit.sh <plan_dir> <task_id> <workdir> [rundir]
+scripts/codex_commit.sh <plan_dir> <task_id> <workdir> <rundir>
 
 # check the diff against a task's allowlist (also runs standalone)
 scripts/codex_scope_check.sh <allowlist_file> <workdir> [base_ref]
 ```
 
-Exit codes: `0` clean, `2` usage/preflight error (nothing ran), `3` out of
-scope — for `codex_run.sh`/`codex_resume.sh` anything else is Codex's own exit
-code, and `codex_commit.sh` uses `1` for "tests failed or nothing changed, no
-commit made". `codex_status.sh` returns `0` when the plan is finished and `3`
-while tasks remain.
+Requires **bash 4.4+** (macOS ships 3.2 — `brew install bash`).
 
-Env overrides: `CODEX_MODEL`, `CODEX_SANDBOX` (`read-only` | `workspace-write`
-| `danger-full-access`, default `workspace-write`), `CODEX_EXTRA_ARGS`,
-`CODEX_ALLOWLIST`, `CODEX_RESUME_MODE` (`auto` | `resume` | `fresh`, default
-`auto`), `CODEX_ALLOW_DIRTY`, `CODEX_ALLOW_DEFAULT_BRANCH`.
+Exit codes: `0` clean, `2` usage/preflight error (nothing ran), `3` out of
+scope, `4` Codex edited the plan directory, `5` HEAD moved mid-task. For
+`codex_run.sh`/`codex_resume.sh` anything else is Codex's own exit code;
+`codex_commit.sh` uses `1` for "tests failed or nothing changed, no commit
+made". `codex_status.sh` returns `0` when the plan is finished and `3` while
+tasks remain.
+
+| Env | Default | Does |
+|---|---|---|
+| `CODEX_MODEL` | CLI default | passed as `-m` |
+| `CODEX_SANDBOX` | `workspace-write` | `read-only` \| `workspace-write` \| `danger-full-access` |
+| `CODEX_EXTRA_ARGS` | — | raw args appended to `codex exec` |
+| `CODEX_ALLOWLIST` | `<packet>.allowlist` | file-scope allowlist |
+| `CODEX_INTERFACES` | `interfaces.md` beside the packet | contracts injected into the prompt; empty string disables |
+| `CODEX_RESUME_MODE` | `auto` | `auto` \| `resume` \| `last` \| `fresh` |
+| `CODEX_MAX_ATTEMPTS` | `3` | hint-loop cap; `0` removes it |
+| `CODEX_TIMEOUT` | `3600` | seconds before Codex is killed; `0` disables |
+| `CODEX_TEST_TIMEOUT` | `900` | seconds per test command |
+| `CODEX_META_DIR` | `.codex-instructions` | orchestration metadata, workdir-relative |
+| `CODEX_ALLOW_DIRTY` | — | `1` skips the uncommitted-changes preflight |
+| `CODEX_ALLOW_DEFAULT_BRANCH` | — | `1` allows running on the default branch |
+| `CODEX_ALLOW_NO_TESTS` | — | `1` commits a task with no test gate |
+
+`CODEX_RESUME_MODE=last` resumes whichever session the CLI saw most recently.
+That is only correct when nothing else has used Codex in the meantime —
+another terminal or agent would silently receive the hint instead — so `auto`
+resumes the exact session id recorded during the run, and falls back to a
+fresh run carrying the previous report rather than guessing.
 
 ### Run artifacts
 
@@ -212,9 +256,27 @@ codex-plugin/
 ├── commands/            # /codex-spec, /codex-run, /codex-accept
 ├── skills/codex-orchestration/SKILL.md
 ├── agents/codex-reviewer.md
-├── scripts/             # run, resume, commit, status, scope_check
+├── scripts/             # lib, run, resume, commit, status, scope_check
+├── tests/               # run_all.sh + a fake codex CLI
 └── README.md
 ```
+
+## Tests
+
+```bash
+bash codex-plugin/tests/run_all.sh
+```
+
+The suites drive the real scripts against a fake `codex` on `PATH`
+(`tests/fixtures/codex`) and throwaway git repositories, so they need no Codex
+CLI, API key, or network. They cover each gate's refusals and the argument
+construction handed to the CLI. CI runs them plus `shellcheck` on every push.
+
+**Not covered:** the real Codex CLI's flag grammar. `codex exec`'s options are
+placed before the `resume` subcommand because that is where a subcommand's
+parent options belong, but this was not verified against an installed Codex —
+run `codex exec --help` and `codex exec resume --help` once against your
+version before trusting the hint loop unattended.
 
 ## Not covered
 

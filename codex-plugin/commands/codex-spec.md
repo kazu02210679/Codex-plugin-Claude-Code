@@ -50,9 +50,16 @@ own startup cost, and tasks that only make sense together are one task.
 
 Same rules as any task packet: the requirement, a line telling Codex not to add
 what the packet did not ask for, in/out of scope, the acceptance checklist for
-*this task*, and the stuck-protocol line. Where the task depends on something
-an earlier one built, quote the relevant part of `interfaces.md` — each task is
-a fresh Codex session and inherits no memory of the last.
+*this task*, and the stuck-protocol line.
+
+Add a hands-off line as well: "Do not create or amend commits, switch branches,
+rebase, reset, or otherwise modify git history, and do not edit anything under
+`.codex-instructions/`." Both are enforced by the gates, but Codex should be
+told rather than only caught.
+
+Do not quote `interfaces.md` into the packets. `codex_run.sh` appends it to the
+prompt at run time, so the packets stay stable and the plan does not have to be
+rewritten mid-loop.
 
 ## Each `T<N>.allowlist`
 

@@ -1,0 +1,23 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  wrappers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash version
+        run: bash --version
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck -S warning codex-plugin/scripts/*.sh codex-plugin/tests/*.sh
+
+      - name: wrapper tests
+        run: bash codex-plugin/tests/run_all.sh

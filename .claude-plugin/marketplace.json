@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Personal Claude Code marketplace hosted in the Codex-plugin-Claude-Code repo.",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "plugins": [
     {

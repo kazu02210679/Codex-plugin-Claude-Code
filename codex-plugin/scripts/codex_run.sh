@@ -25,7 +25,8 @@
 #   <rundir>/attempt-1/meta.json      run metadata (exit code, paths, commit)
 #   <rundir>/attempt-1/scope.txt      allowlist verdict, when one applies
 #   <rundir>/base_commit              pre-run commit; the scope-check baseline
-#   <rundir>/allowlist                frozen copy of the allowlist for this task
+#   <rundir>/allowlist                frozen allowlist — the gate reads THIS
+#   <rundir>/thread_id                session id for a targeted resume
 #
 # `codex_resume.sh` adds attempt-2, attempt-3, ... to the same <rundir>.
 #
@@ -37,6 +38,12 @@
 #   CODEX_ALLOWLIST   -> path to the file-scope allowlist. Default: the
 #                        instruction file with .md replaced by .allowlist,
 #                        when that file exists.
+#   CODEX_INTERFACES  -> contracts file injected into the prompt. Default:
+#                        interfaces.md beside the instruction file. Set to the
+#                        empty string to inject nothing.
+#   CODEX_TIMEOUT     -> seconds before Codex is killed. Default 3600, 0 = off.
+#   CODEX_META_DIR    -> orchestration metadata, workdir-relative.
+#                        Default .codex-instructions.
 #   CODEX_ALLOW_DIRTY=1           -> skip the uncommitted-changes preflight.
 #   CODEX_ALLOW_DEFAULT_BRANCH=1  -> allow running on the default branch.
 #
@@ -44,18 +51,20 @@
 #   0   Codex succeeded and stayed inside the allowlist
 #   2   usage / preflight error (Codex was never started)
 #   3   Codex succeeded but changed files outside the allowlist
+#   4   Codex modified orchestration metadata (it must never do this)
 #   *   otherwise, Codex's own exit code
 #
-# NOTE: `codex exec` is non-interactive, so there is no approval prompt; what
-# Codex may read/write/run is governed entirely by `--sandbox`. The flag names
-# below match the OpenAI Codex CLI as of this writing (verified against
-# codex-cli 0.144.x). If your installed Codex differs, run `codex exec --help`
-# and adjust. The four things this wrapper needs are: (1) a prompt, (2) a
-# working directory, (3) sandbox level, (4) a way to capture the final
-# message + JSON.
+# NOTE ON CODEX CLI FLAGS: `codex exec` is non-interactive, so there is no
+# approval prompt; what Codex may read/write/run is governed entirely by
+# `--sandbox`. This wrapper needs four things from the CLI: a prompt, a working
+# directory, a sandbox level, and a way to capture the final message + JSON.
+# Run `codex exec --help` once against your installed version and adjust the
+# flags below if they differ.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=codex_lib.sh
+. "$SCRIPT_DIR/codex_lib.sh"
 
 die() { printf 'codex_run: %s\n' "$1" >&2; exit 2; }
 
@@ -70,12 +79,26 @@ command -v codex >/dev/null 2>&1 || die "the 'codex' CLI is not installed or not
 [ -d "$WORKDIR" ]     || die "workdir not found: $WORKDIR"
 
 CODEX_SANDBOX="${CODEX_SANDBOX:-workspace-write}"
+CODEX_TIMEOUT="${CODEX_TIMEOUT:-3600}"
+PLAN_DIR="$(cd -- "$(dirname -- "$INSTRUCTION")" && pwd)"
+
+# --- resolve the allowlist --------------------------------------------------
+ALLOWLIST="${CODEX_ALLOWLIST:-}"
+if [ -z "$ALLOWLIST" ]; then
+  CANDIDATE="${INSTRUCTION%.md}.allowlist"
+  [ -f "$CANDIDATE" ] && ALLOWLIST="$CANDIDATE"
+fi
+[ -z "$ALLOWLIST" ] || [ -f "$ALLOWLIST" ] || die "allowlist not found: $ALLOWLIST"
 
 # --- git preflight ----------------------------------------------------------
 # Codex runs unattended with write access. Two states make that unsafe, and
 # both also defeat the scope check, which diffs the worktree against the
 # pre-run commit: working directly on the default branch, and starting from a
 # dirty tree (pre-existing edits cannot be told apart from Codex's).
+#
+# Orchestration metadata is exempt. The plan, hints and interfaces file are
+# written by the orchestrator as the loop runs — holding them to "commit before
+# every task" would mean the very first task could never start.
 IS_GIT=0
 BASE_COMMIT=""
 BRANCH=""
@@ -92,22 +115,25 @@ if git -C "$WORKDIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     die "refusing to run Codex on the default branch ('$BRANCH'). Create a work branch first, or set CODEX_ALLOW_DEFAULT_BRANCH=1."
   fi
 
-  if [ -n "$(git -C "$WORKDIR" status --porcelain)" ] && [ "${CODEX_ALLOW_DIRTY:-0}" != "1" ]; then
-    die "workdir has uncommitted changes. The scope check diffs against the pre-run commit, so pre-existing edits cannot be told apart from Codex's. Commit or stash first, or set CODEX_ALLOW_DIRTY=1."
+  if [ "${CODEX_ALLOW_DIRTY:-0}" != "1" ]; then
+    dirty=()
+    while IFS= read -r f; do
+      [ -n "$f" ] && dirty+=("$f")
+    done < <(codex_dirty_product "$WORKDIR" HEAD)
+    if [ "${#dirty[@]}" -gt 0 ]; then
+      printf 'codex_run: uncommitted product changes:\n' >&2
+      printf '  %s\n' "${dirty[@]}" >&2
+      die "workdir has uncommitted product changes. The scope check diffs against the pre-run commit, so pre-existing edits cannot be told apart from Codex's. Commit or stash first, or set CODEX_ALLOW_DIRTY=1. (Changes under $CODEX_META_DIR/ are exempt and were ignored.)"
+    fi
   fi
 
   BASE_COMMIT="$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || echo '')"
 else
-  printf 'codex_run: warning: %s is not a git repository — skipping branch, dirty-tree and scope checks\n' "$WORKDIR" >&2
+  # Without git there is no scope gate and no commit gate. Fine for a one-off
+  # experiment; not fine for a task that declared a scope it expects enforced.
+  [ -z "$ALLOWLIST" ] || die "$WORKDIR is not a git repository, but this task has an allowlist ($ALLOWLIST). The scope gate needs git — initialise a repository, or drop the allowlist to acknowledge the task runs unguarded."
+  printf 'codex_run: warning: %s is not a git repository — no branch, dirty-tree or scope checks\n' "$WORKDIR" >&2
 fi
-
-# --- resolve the allowlist --------------------------------------------------
-ALLOWLIST="${CODEX_ALLOWLIST:-}"
-if [ -z "$ALLOWLIST" ]; then
-  CANDIDATE="${INSTRUCTION%.md}.allowlist"
-  [ -f "$CANDIDATE" ] && ALLOWLIST="$CANDIDATE"
-fi
-[ -z "$ALLOWLIST" ] || [ -f "$ALLOWLIST" ] || die "allowlist not found: $ALLOWLIST"
 
 ATTEMPT="$RUNDIR/attempt-1"
 mkdir -p "$ATTEMPT"
@@ -118,7 +144,30 @@ mkdir -p "$ATTEMPT"
 printf '*\n' >"$RUNDIR/.gitignore"
 
 printf '%s' "$BASE_COMMIT" >"$RUNDIR/base_commit"
+# The gate reads this frozen copy, never the plan's live file: Codex can reach
+# the plan directory on disk, and an allowlist it can widen mid-run is not a
+# constraint. The fingerprint below catches the attempt as well.
 [ -z "$ALLOWLIST" ] || cp "$ALLOWLIST" "$RUNDIR/allowlist"
+
+# --- assemble the prompt ----------------------------------------------------
+# Each task is a separate `codex exec` with no memory of the last one, so
+# whatever earlier tasks established has to be handed over explicitly. Doing it
+# here rather than by editing T<N>.md keeps the packets stable and avoids
+# dirtying the plan mid-loop.
+INTERFACES="${CODEX_INTERFACES-$PLAN_DIR/interfaces.md}"
+PROMPT="$(cat "$INSTRUCTION")"
+if [ -n "$INTERFACES" ] && [ -s "$INTERFACES" ]; then
+  PROMPT="$PROMPT
+
+## Verified interfaces from completed tasks
+
+These are established contracts. Call them as written; do not redesign them,
+and do not re-implement what they already provide.
+
+$(cat "$INTERFACES")"
+fi
+
+META_BEFORE="$(codex_meta_fingerprint "$WORKDIR")"
 
 # Build args as an array so quoting is safe.
 args=(exec
@@ -131,22 +180,43 @@ args=(exec
 # shellcheck disable=SC2206
 [ -n "${CODEX_EXTRA_ARGS:-}" ] && args+=(${CODEX_EXTRA_ARGS})
 
-printf 'codex_run: starting Codex\n  workdir : %s\n  branch  : %s\n  sandbox : %s\n  attempt : %s\n  scope   : %s\n' \
-  "$WORKDIR" "${BRANCH:-n/a}" "$CODEX_SANDBOX" "$ATTEMPT" "${ALLOWLIST:-(none)}" >&2
+TIMEOUT_CMD=()
+while IFS= read -r t; do [ -n "$t" ] && TIMEOUT_CMD+=("$t"); done < <(codex_timeout_prefix "$CODEX_TIMEOUT")
 
+printf 'codex_run: starting Codex\n  workdir : %s\n  branch  : %s\n  sandbox : %s\n  attempt : %s\n  scope   : %s\n  timeout : %s\n' \
+  "$WORKDIR" "${BRANCH:-n/a}" "$CODEX_SANDBOX" "$ATTEMPT" "${ALLOWLIST:-(none)}" \
+  "${TIMEOUT_CMD:+${CODEX_TIMEOUT}s}${TIMEOUT_CMD:-none}" >&2
+
+# stdin is closed: with a prompt argument present, Codex appends anything piped
+# on stdin to the prompt, so an inherited pipe would silently corrupt the task.
 set +e
-codex "${args[@]}" "$(cat "$INSTRUCTION")" \
-  >"$ATTEMPT/events.jsonl" 2>"$ATTEMPT/stderr.log"
+"${TIMEOUT_CMD[@]}" codex "${args[@]}" "$PROMPT" \
+  >"$ATTEMPT/events.jsonl" 2>"$ATTEMPT/stderr.log" </dev/null
 RC=$?
 set -e
+[ "$RC" -eq 124 ] && printf 'codex_run: Codex hit the %ss timeout\n' "$CODEX_TIMEOUT" >&2
 
 [ -f "$ATTEMPT/report.md" ] || printf '(no final message captured; see stderr.log)\n' >"$ATTEMPT/report.md"
+
+# Record the session id so the hint loop can resume THIS run rather than
+# whatever session happened to be most recent on the machine.
+codex_thread_id "$ATTEMPT/events.jsonl" >"$RUNDIR/thread_id"
+
+# --- metadata integrity -----------------------------------------------------
+META_AFTER="$(codex_meta_fingerprint "$WORKDIR")"
+META_OK=true
+if [ "$META_BEFORE" != "$META_AFTER" ]; then
+  META_OK=false
+  printf 'codex_run: FAIL — Codex modified %s/ during the run.\n' "$CODEX_META_DIR" >&2
+  printf '  The plan, the allowlist and the hints are the contract Codex is judged against;\n' >&2
+  printf '  a run that edits them can widen its own scope. Inspect the diff before continuing.\n' >&2
+fi
 
 # --- scope gate -------------------------------------------------------------
 SCOPE_RC=0
 if [ -n "$ALLOWLIST" ] && [ "$IS_GIT" = "1" ]; then
   set +e
-  "$SCRIPT_DIR/codex_scope_check.sh" "$ALLOWLIST" "$WORKDIR" "$BASE_COMMIT" \
+  "$SCRIPT_DIR/codex_scope_check.sh" "$RUNDIR/allowlist" "$WORKDIR" "$BASE_COMMIT" \
     >"$ATTEMPT/scope.txt" 2>&1
   SCOPE_RC=$?
   set -e
@@ -162,6 +232,8 @@ cat >"$ATTEMPT/meta.json" <<JSON
   "branch": "$BRANCH",
   "base_commit": "$BASE_COMMIT",
   "allowlist": "${ALLOWLIST:-}",
+  "interfaces_injected": $([ -n "$INTERFACES" ] && [ -s "$INTERFACES" ] && echo true || echo false),
+  "meta_intact": $META_OK,
   "scope_ok": $([ "$SCOPE_RC" -eq 0 ] && echo true || echo false),
   "sandbox": "$CODEX_SANDBOX",
   "model": "${CODEX_MODEL:-default}",
@@ -173,6 +245,9 @@ JSON
 printf 'codex_run: done (exit=%s)\n  RUNDIR: %s\n  REPORT: %s\n  EVENTS: %s\n  META  : %s\n' \
   "$RC" "$RUNDIR" "$ATTEMPT/report.md" "$ATTEMPT/events.jsonl" "$ATTEMPT/meta.json" >&2
 
+# Tampering outranks everything: if the contract moved, no other verdict here
+# can be trusted.
+[ "$META_OK" = "true" ] || exit 4
 # A clean Codex exit with an out-of-scope diff is still a failure — surface it
 # distinctly so the orchestrator never reads exit 0 as "ready to accept".
 if [ "$RC" -eq 0 ] && [ "$SCOPE_RC" -ne 0 ]; then

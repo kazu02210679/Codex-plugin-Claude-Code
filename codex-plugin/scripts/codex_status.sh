@@ -3,9 +3,13 @@
 # codex_status.sh — where is this plan up to?
 #
 # Progress is read back out of git history, not from a status file. Every task
-# commit carries a `Codex-Task:` trailer, so the commits themselves are the
-# ledger: there is no second copy of the truth to drift, and the answer
-# survives anything that happens to the orchestrator's context.
+# commit carries `Codex-Plan:` and `Codex-Task:` trailers, so the commits
+# themselves are the ledger: there is no second copy of the truth to drift, and
+# the answer survives anything that happens to the orchestrator's context.
+#
+# Both trailers are matched, not just the task id. Task ids restart at T1 for
+# every plan, so a branch that has already carried one plan would otherwise
+# report the next plan's T1 as finished before it had started.
 #
 # Run this at the start of a resumed session, or any time you are unsure which
 # task is next.
@@ -18,6 +22,9 @@
 #   2  usage / environment error
 #   3  tasks remain
 set -euo pipefail
+
+# shellcheck source=codex_lib.sh
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/codex_lib.sh"
 
 die() { printf 'codex_status: %s\n' "$1" >&2; exit 2; }
 
@@ -59,6 +66,8 @@ if [ -n "$DEFAULT_BRANCH" ]; then
   [ -n "$BASE" ] && RANGE="$BASE..HEAD"
 fi
 
+PLAN_ID="$(basename "$(cd -- "$TASKDIR" && pwd)")"
+
 declare -A sha_of=()
 declare -A subject_of=()
 while IFS= read -r -d $'\x1e' rec; do
@@ -66,14 +75,16 @@ while IFS= read -r -d $'\x1e' rec; do
   [ -n "$rec" ] || continue
   sha="${rec%%$'\x1f'*}"; rest="${rec#*$'\x1f'}"
   subj="${rest%%$'\x1f'*}"; body="${rest#*$'\x1f'}"
+  plan="$(printf '%s\n' "$body" | sed -n 's/^Codex-Plan:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -1)"
   task="$(printf '%s\n' "$body" | sed -n 's/^Codex-Task:[[:space:]]*\([A-Za-z0-9_-]*\).*/\1/p' | head -1)"
   [ -n "$task" ] || continue
+  [ "$plan" = "$PLAN_ID" ] || continue
   # git log is newest-first; keep the newest commit for each task id.
   [ -n "${sha_of[$task]:-}" ] || { sha_of[$task]="$sha"; subject_of[$task]="$subj"; }
 done < <(git -C "$WORKDIR" log --format="%h%x1f%s%x1f%b%x1e" ${RANGE:+"$RANGE"} 2>/dev/null || true)
 
 # --- report -----------------------------------------------------------------
-printf 'plan: %s (%d task(s))\n' "$TASKDIR" "${#ids[@]}"
+printf 'plan: %s [%s] (%d task(s))\n' "$TASKDIR" "$PLAN_ID" "${#ids[@]}"
 
 done_count=0
 next=""
