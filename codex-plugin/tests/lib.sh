@@ -51,10 +51,20 @@ new_plan() {
   printf '%s' "$p"
 }
 
-# rundir_of <repo> — the newest run directory.
+# do_run <repo> <packet> [touch] — delegate one task, printing its RUNDIR.
+# The path is read back from the script's own output rather than guessed from
+# the directory listing: run directories are uniquely named, so two runs
+# started in the same second cannot be told apart by name.
+do_run() {
+  local out
+  out="$(FAKE_CODEX_TOUCH="${3:-src/a.py}" "$S/codex_run.sh" "$2" "$1" 2>&1)"
+  printf '%s\n' "$out" | sed -n 's/^  RUNDIR: //p' | tail -1
+}
+
+# rundir_of <repo> — the most recently written run directory.
 rundir_of() {
   local r
-  r="$(ls -d "$1"/.codex-runs/*/ 2>/dev/null | sort | tail -1)"
+  r="$(ls -dt "$1"/.codex-runs/*/ 2>/dev/null | head -1)"
   printf '%s' "${r%/}"
 }
 

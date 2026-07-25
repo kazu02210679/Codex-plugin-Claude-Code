@@ -1,6 +1,6 @@
 {
   "name": "codex-plugin",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Claude Code orchestrates; OpenAI Codex implements. Claude owns requirements, design direction, acceptance criteria and delivery judgment; Codex does code investigation, implementation design, coding, tests and reporting. Work is split into tasks and committed one at a time, gated on a per-task file allowlist and a green test run. Claude steps in with guidance when Codex gets stuck.",
   "author": {
     "name": "kazu"

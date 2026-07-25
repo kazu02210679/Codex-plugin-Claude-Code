@@ -4,10 +4,7 @@ set -uo pipefail
 . "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 # run_task <repo> <plan> <task> [touch] — a full delegate step, returning RUNDIR.
-run_task() {
-  FAKE_CODEX_TOUCH="${4:-src/a.py}" "$S/codex_run.sh" "$2/$3.md" "$1" >/dev/null 2>&1
-  rundir_of "$1"
-}
+run_task() { do_run "$1" "$2/$3.md" "${4:-src/a.py}"; }
 
 echo "== the gate refuses =="
 # The plan is fixed before the run, because the commit gate judges against the

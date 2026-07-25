@@ -72,7 +72,9 @@ mid-loop" mutually impossible.
   rather than the live files. A task judged against an allowlist or a test
   command that could be rewritten is not judged at all — by Codex during the
   run (a fingerprint over the plan directory catches that, exit `4`) or by the
-  orchestrator between the run and the commit (exit `6`).
+  orchestrator between the run and the commit (exit `6`). The fingerprint
+  covers the plan being run, not every plan, so a second agent working a
+  different plan in the same repository does not trip it.
 - **commit gate** — `codex_commit.sh` runs the task's tests and refuses to
   commit unless they pass. One task, one commit; a task with no test command is
   an error rather than a free pass. Scope is re-checked *after* the tests,
@@ -150,7 +152,9 @@ Requirements: **bash 4.4+** (macOS ships 3.2 — `brew install bash`), git, and
 a SHA-256 tool — `sha256sum`, `shasum` or `openssl`, whichever is present.
 Beyond that only POSIX `find`, `sort` and `mktemp` are used, so no GNU
 coreutils dependency: the scripts run the same on macOS and Linux. A missing
-hash tool is an error, not a skipped integrity check.
+hash tool is an error, not a skipped integrity check, and the test suite
+checks each backend against a known digest — a hash that silently agrees with
+itself would let the integrity gates pass anything.
 
 Exit codes: `0` clean, `2` usage/preflight error (nothing ran), `3` out of
 scope, `4` Codex edited the plan directory, `5` HEAD moved mid-task, `6` the
@@ -185,17 +189,23 @@ fresh run carrying the previous report rather than guessing.
 ### Run artifacts
 
 ```
-<workdir>/.codex-runs/<timestamp>/
+<workdir>/.codex-runs/<timestamp>-<unique>/
 ├── .gitignore          # `*` — run output is local evidence, not repo content
 ├── base_commit         # pre-run commit; the scope-check baseline
 ├── task.md             # ┐
 ├── allowlist           # ├ the frozen contract — what the gates judge against
 ├── test                # ┘
+├── plan_dir            # which plan this run belongs to
 ├── thread_id           # session to resume when a hint goes back
 ├── attempt-1/          # report.md, events.jsonl, stderr.log, meta.json, scope.txt
 ├── attempt-2/          # each hint→resume opens a new attempt
 └── ...
 ```
+
+Names carry a random suffix, not just a timestamp: two tasks started in the
+same second would otherwise share a directory, and the second would overwrite
+the first's frozen contract while it was still in use. An explicit run
+directory that already has contents is refused for the same reason.
 
 Attempts are never overwritten. When the loop hits its cap and escalates, every
 attempt's report and event stream is still on disk to explain what was tried —

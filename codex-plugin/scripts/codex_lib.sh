@@ -87,10 +87,19 @@ codex_test_file() {
 # --- hashing ----------------------------------------------------------------
 # sha256sum is GNU coreutils; macOS ships shasum instead. Resolve once, and
 # fail loudly rather than silently skipping an integrity check.
+#
+# All three MUST print the digest as the first space-separated field. Plain
+# `openssl dgst -sha256` prints `SHA2-256(stdin)= <hash>`, whose first field is
+# a constant — every file would hash alike and the integrity checks would pass
+# anything. `-r` switches it to coreutils order. Set CODEX_HASH_CMD to force a
+# backend; the tests use it to exercise each one.
 CODEX_HASH=()
-if command -v sha256sum >/dev/null 2>&1;   then CODEX_HASH=(sha256sum)
+if [ -n "${CODEX_HASH_CMD:-}" ]; then
+  # shellcheck disable=SC2206  # deliberate word splitting: this is a command
+  CODEX_HASH=(${CODEX_HASH_CMD})
+elif command -v sha256sum >/dev/null 2>&1; then CODEX_HASH=(sha256sum)
 elif command -v shasum >/dev/null 2>&1;    then CODEX_HASH=(shasum -a 256)
-elif command -v openssl >/dev/null 2>&1;   then CODEX_HASH=(openssl dgst -sha256)
+elif command -v openssl >/dev/null 2>&1;   then CODEX_HASH=(openssl dgst -sha256 -r)
 fi
 
 codex_require_hash() {
@@ -106,12 +115,18 @@ codex_hash_file() {
   "${CODEX_HASH[@]}" <"$1" | cut -d' ' -f1
 }
 
-# codex_meta_fingerprint <workdir>
-# A single hash over every file under the meta dir. Compared across a Codex run
-# to prove Codex did not rewrite its own instructions — most importantly its
-# own allowlist, which it could otherwise widen and then pass the scope gate.
+# codex_meta_fingerprint <plandir>
+# A single hash over every file in ONE plan directory. Compared across a Codex
+# run to prove Codex did not rewrite its own instructions — most importantly
+# its own allowlist, which it could otherwise widen and then pass the scope
+# gate.
+#
+# Scoped to the plan being run, not to all of .codex-instructions/: a second
+# agent working a different plan in the same repository would otherwise trip
+# this check, and reporting "Codex tampered with the plan" for someone else's
+# hint file is a false alarm that trains you to ignore a real one.
 codex_meta_fingerprint() {
-  local d="$1/$CODEX_META_DIR"
+  local d="$1"
   if [ ! -d "$d" ]; then printf 'absent\n'; return 0; fi
   # POSIX find + sort only: `sort -z` and `xargs -r` are GNU extensions that
   # macOS does not have, and silently producing a different fingerprint there

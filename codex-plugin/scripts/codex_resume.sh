@@ -85,6 +85,17 @@ PREV_REPORT="${4:-$PREV/report.md}"
 BASE_COMMIT=""
 [ -f "$RUNDIR/base_commit" ] && BASE_COMMIT="$(cat "$RUNDIR/base_commit")"
 
+# The plan this run belongs to, recorded by codex_run.sh. The integrity check
+# is scoped to it so a second agent working a different plan in the same
+# repository does not trip this one.
+PLAN_DIR="$(cd -- "$(dirname -- "$HINT")" && pwd)"
+[ -s "$RUNDIR/plan_dir" ] && PLAN_DIR="$(cat "$RUNDIR/plan_dir")"
+PLAN_WATCH=""
+case "$PLAN_DIR" in
+  "$(cd -- "$WORKDIR" && pwd)/$CODEX_META_DIR"|"$(cd -- "$WORKDIR" && pwd)/$CODEX_META_DIR"/*)
+    PLAN_WATCH="$PLAN_DIR" ;;
+esac
+
 THREAD_ID=""
 [ -f "$RUNDIR/thread_id" ] && THREAD_ID="$(tr -d '[:space:]' <"$RUNDIR/thread_id")"
 
@@ -166,7 +177,8 @@ mkdir -p "$ATTEMPT"
 printf 'codex_resume: continuing from attempt-%s\n  hint    : %s\n  mode    : %s%s\n  attempt : %s (cap %s)\n  scope   : %s\n' \
   "$LAST_N" "$HINT" "$MODE" "${THREAD_ID:+ [$THREAD_ID]}" "$ATTEMPT" "$MAX" "${ALLOWLIST:-(none)}" >&2
 
-META_BEFORE="$(codex_meta_fingerprint "$WORKDIR")"
+META_BEFORE=""
+[ -n "$PLAN_WATCH" ] && META_BEFORE="$(codex_meta_fingerprint "$PLAN_WATCH")"
 
 set +e
 case "$MODE" in
@@ -183,11 +195,10 @@ set -e
 NEW_ID="$(codex_thread_id "$ATTEMPT/events.jsonl")"
 [ -n "$NEW_ID" ] && printf '%s\n' "$NEW_ID" >"$RUNDIR/thread_id"
 
-META_AFTER="$(codex_meta_fingerprint "$WORKDIR")"
 META_OK=true
-if [ "$META_BEFORE" != "$META_AFTER" ]; then
+if [ -n "$PLAN_WATCH" ] && [ "$META_BEFORE" != "$(codex_meta_fingerprint "$PLAN_WATCH")" ]; then
   META_OK=false
-  printf 'codex_resume: FAIL — Codex modified %s/ during the run.\n' "$CODEX_META_DIR" >&2
+  printf 'codex_resume: FAIL — Codex modified the plan directory during the run:\n  %s\n' "$PLAN_DIR" >&2
 fi
 
 # --- scope gate -------------------------------------------------------------

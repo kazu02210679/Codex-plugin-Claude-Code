@@ -25,7 +25,10 @@
 #   <rundir>/attempt-1/meta.json      run metadata (exit code, paths, commit)
 #   <rundir>/attempt-1/scope.txt      allowlist verdict, when one applies
 #   <rundir>/base_commit              pre-run commit; the scope-check baseline
-#   <rundir>/allowlist                frozen allowlist — the gate reads THIS
+#   <rundir>/task.md                  ┐ the frozen contract — the gates read
+#   <rundir>/allowlist                ├ THESE, never the plan's live files
+#   <rundir>/test                     ┘
+#   <rundir>/plan_dir                 which plan this run belongs to
 #   <rundir>/thread_id                session id for a targeted resume
 #
 # `codex_resume.sh` adds attempt-2, attempt-3, ... to the same <rundir>.
@@ -72,7 +75,7 @@ die() { printf 'codex_run: %s\n' "$1" >&2; exit 2; }
 
 INSTRUCTION="$1"
 WORKDIR="$2"
-RUNDIR="${3:-"$WORKDIR/.codex-runs/$(date +%Y%m%d-%H%M%S)"}"
+RUNDIR="${3:-}"
 
 command -v codex >/dev/null 2>&1 || die "the 'codex' CLI is not installed or not on PATH. Install it and authenticate (OPENAI_API_KEY or 'codex login') first."
 codex_require_hash || exit 2
@@ -82,6 +85,16 @@ codex_require_hash || exit 2
 CODEX_SANDBOX="${CODEX_SANDBOX:-workspace-write}"
 CODEX_TIMEOUT="${CODEX_TIMEOUT:-3600}"
 PLAN_DIR="$(cd -- "$(dirname -- "$INSTRUCTION")" && pwd)"
+
+# The integrity check watches the plan directory — but only when the packet
+# really lives in one. A one-off packet kept somewhere else has no plan to
+# protect, and fingerprinting whatever directory it happens to sit in would
+# hash unrelated files (possibly the workspace itself) and fail every run.
+PLAN_WATCH=""
+case "$PLAN_DIR" in
+  "$(cd -- "$WORKDIR" && pwd)/$CODEX_META_DIR"|"$(cd -- "$WORKDIR" && pwd)/$CODEX_META_DIR"/*)
+    PLAN_WATCH="$PLAN_DIR" ;;
+esac
 
 # --- resolve the allowlist --------------------------------------------------
 ALLOWLIST="${CODEX_ALLOWLIST:-}"
@@ -136,6 +149,19 @@ else
   printf 'codex_run: warning: %s is not a git repository — no branch, dirty-tree or scope checks\n' "$WORKDIR" >&2
 fi
 
+# --- open the run directory -------------------------------------------------
+# A timestamp to the second is not a unique name. Two tasks started in the same
+# second — or a stale directory passed back by mistake — would share one run
+# directory, and the second run would overwrite the first's frozen contract and
+# attempt-1 while both were still using them. `mktemp -d` keeps the sortable
+# timestamp and makes the name collision-proof.
+if [ -z "$RUNDIR" ]; then
+  mkdir -p "$WORKDIR/.codex-runs"
+  RUNDIR="$(mktemp -d "$WORKDIR/.codex-runs/$(date +%Y%m%d-%H%M%S)-XXXXXX")"
+elif [ -e "$RUNDIR" ] && [ -n "$(ls -A "$RUNDIR" 2>/dev/null)" ]; then
+  die "run directory already exists and is not empty: $RUNDIR. Starting here would overwrite that run's frozen contract and its attempts. Pass a new path, or omit the argument to get a fresh one."
+fi
+
 ATTEMPT="$RUNDIR/attempt-1"
 mkdir -p "$ATTEMPT"
 
@@ -154,6 +180,8 @@ printf '%s' "$BASE_COMMIT" >"$RUNDIR/base_commit"
 # the commit, which the run-scoped fingerprint below cannot see.
 cp "$INSTRUCTION" "$RUNDIR/task.md"
 [ -z "$ALLOWLIST" ] || cp "$ALLOWLIST" "$RUNDIR/allowlist"
+# Recorded so codex_resume.sh fingerprints the same plan rather than guessing.
+printf '%s' "$PLAN_DIR" >"$RUNDIR/plan_dir"
 
 TASK_ID="$(basename "$INSTRUCTION" .md)"
 FROZEN_TEST="$(codex_test_file "$PLAN_DIR" "$TASK_ID")"
@@ -180,7 +208,8 @@ and do not re-implement what they already provide.
 $(cat "$INTERFACES")"
 fi
 
-META_BEFORE="$(codex_meta_fingerprint "$WORKDIR")"
+META_BEFORE=""
+[ -n "$PLAN_WATCH" ] && META_BEFORE="$(codex_meta_fingerprint "$PLAN_WATCH")"
 
 # Build args as an array so quoting is safe.
 args=(exec
@@ -216,11 +245,10 @@ set -e
 codex_thread_id "$ATTEMPT/events.jsonl" >"$RUNDIR/thread_id"
 
 # --- metadata integrity -----------------------------------------------------
-META_AFTER="$(codex_meta_fingerprint "$WORKDIR")"
 META_OK=true
-if [ "$META_BEFORE" != "$META_AFTER" ]; then
+if [ -n "$PLAN_WATCH" ] && [ "$META_BEFORE" != "$(codex_meta_fingerprint "$PLAN_WATCH")" ]; then
   META_OK=false
-  printf 'codex_run: FAIL — Codex modified %s/ during the run.\n' "$CODEX_META_DIR" >&2
+  printf 'codex_run: FAIL — Codex modified the plan directory during the run:\n  %s\n' "$PLAN_DIR" >&2
   printf '  The plan, the allowlist and the hints are the contract Codex is judged against;\n' >&2
   printf '  a run that edits them can widen its own scope. Inspect the diff before continuing.\n' >&2
 fi

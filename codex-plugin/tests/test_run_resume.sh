@@ -57,12 +57,61 @@ printf 'LEAKED CONTENT\n' | FAKE_CODEX_STDIN_LOG="$SL" FAKE_CODEX_TOUCH="src/a.p
   "$S/codex_run.sh" "$P/T1.md" "$R" >/dev/null 2>&1
 hasnt "caller stdin does not reach Codex" "$(cat "$SL")" "LEAKED CONTENT"
 
+echo "== every hash backend produces a real digest =="
+# `openssl dgst -sha256` prints `SHA2-256(stdin)= <hash>`, so taking the first
+# field yields a constant — every file would hash alike and the integrity
+# checks would wave anything through. Each backend is exercised separately,
+# and against a known vector, because a backend that always agrees with itself
+# still passes a same-tool comparison.
+KNOWN=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+printf abc >"$TMPROOT/abc"; printf xyz >"$TMPROOT/xyz"
+for backend in "sha256sum" "shasum -a 256" "openssl dgst -sha256 -r"; do
+  tool="${backend%% *}"
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    printf '  SKIP  %s not installed\n' "$tool"; continue
+  fi
+  a="$(CODEX_HASH_CMD="$backend" bash -c '. "$0"; codex_hash_file "$1"' "$S/codex_lib.sh" "$TMPROOT/abc")"
+  b="$(CODEX_HASH_CMD="$backend" bash -c '. "$0"; codex_hash_file "$1"' "$S/codex_lib.sh" "$TMPROOT/xyz")"
+  check "$tool matches the known vector" "$a" "$KNOWN"
+  [ "$a" != "$b" ] && ok "$tool distinguishes different files" \
+                   || bad "$tool returns the same value for different files"
+done
+
 echo "== metadata tampering is fatal =="
 R="$(new_repo run4)"; P="$(new_plan "$R" auth)"
 out=$(FAKE_CODEX_TOUCH=".codex-instructions/auth/T1.allowlist" \
   "$S/codex_run.sh" "$P/T1.md" "$R" 2>&1); rc=$?
 check "Codex widening its own allowlist fails the run" "$rc" "4"
 has "explains the risk" "$out" "widen its own scope"
+
+# Scoped to the plan being run: a second agent working another plan in the same
+# repository must not be reported as Codex tampering with this one.
+R="$(new_repo run4b)"; P="$(new_plan "$R" auth)"; new_plan "$R" billing >/dev/null
+out=$(FAKE_CODEX_TOUCH="src/a.py .codex-instructions/billing/T1.md" \
+  "$S/codex_run.sh" "$P/T1.md" "$R" 2>&1); rc=$?
+check "another plan changing underfoot is not tampering" "$rc" "0"
+hasnt "no false alarm" "$out" "modified the plan directory"
+
+echo "== run directories cannot collide =="
+# The default name used to be a timestamp to the second, so two tasks started
+# in the same second shared one directory and the second overwrote the first's
+# frozen contract and attempt-1 while both were still in use.
+R="$(new_repo run4c)"; P="$(new_plan "$R" auth)"
+RD1="$(do_run "$R" "$P/T1.md")"
+git -C "$R" add -A >/dev/null 2>&1; git -C "$R" commit -qm t1 >/dev/null 2>&1
+RD2="$(do_run "$R" "$P/T2.md")"
+[ -n "$RD1" ] && [ -n "$RD2" ] && ok "both runs reported a directory" || bad "missing RUNDIR output"
+[ "$RD1" != "$RD2" ] && ok "same-second runs get distinct directories" \
+                     || bad "collision: both used $RD1"
+check "first run's contract survives" "$(cat "$RD1/task.md")" "$(cat "$P/T1.md")"
+check "second run's contract is its own" "$(cat "$RD2/task.md")" "$(cat "$P/T2.md")"
+
+git -C "$R" add -A >/dev/null 2>&1; git -C "$R" commit -qm t2 >/dev/null 2>&1
+out=$("$S/codex_run.sh" "$P/T1.md" "$R" "$RD1" 2>&1); rc=$?
+check "reusing a populated run directory is refused" "$rc" "2"
+has "explains why" "$out" "already exists and is not empty"
+out=$(FAKE_CODEX_TOUCH="src/a.py" "$S/codex_run.sh" "$P/T1.md" "$R" "$R/.codex-runs/fresh" 2>&1); rc=$?
+check "an unused explicit path is accepted" "$rc" "0"
 
 echo "== scope gate uses the frozen allowlist =="
 R="$(new_repo run5)"; P="$(new_plan "$R" auth)"
