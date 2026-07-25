@@ -1,47 +1,81 @@
 ---
-description: Delegate an implementation task to Codex, then verify the result against the acceptance criteria.
-argument-hint: <path to task packet> [workdir]
+description: Work a Codex plan task by task — delegate, verify, commit — or delegate a single task packet.
+argument-hint: <path to plan directory or task packet> [workdir]
 allowed-tools: Bash, Read, Grep, Glob, Write
 ---
 
-You are the orchestrator. Run the `codex-orchestration` skill, Phases 4–6.
+You are the orchestrator. Run the `codex-orchestration` skill, Phases 4–7.
 
-You do NOT write production code in this command. `Write` is granted for one
-purpose: creating hint files under `.codex-instructions/`. Fixing the code
-yourself instead of sending a hint back to Codex defeats the whole design — and
-the scope check in step 3 will flag it, because it inspects the worktree
-without caring who made the edit.
+You do NOT write production code in this command. `Write` is granted for two
+things only: hint files and `interfaces.md`, both under `.codex-instructions/`.
+Fixing the code yourself instead of sending a hint back to Codex defeats the
+whole design — and the scope check will flag it, because it inspects the
+worktree without caring who made the edit.
 
 Arguments: `$ARGUMENTS`
-- First token: path to the task packet (default: the most recent file in
-  `.codex-instructions/`).
+- First token: a plan directory (`.codex-instructions/<plan>/`) — or a single
+  task packet file, for a one-off delegation with no task loop.
 - Second token (optional): workdir Codex may modify (default: repo root).
 
-Steps:
+## Plan directory — the task loop
 
-1. Delegate to Codex:
+1. Ask where the plan stands. Do this first even in a session that just wrote
+   the plan; it is also how you recover after a compaction or a restart:
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/codex_run.sh" <task_packet> <workdir>
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex_status.sh" <plan_dir> <workdir>
    ```
-   The script refuses to start on the default branch or from a dirty tree —
-   both make the run unsafe and the scope check meaningless. If it refuses,
-   fix the branch/tree state rather than reaching for the override env vars.
-   Note the printed `RUNDIR`; artifacts for this attempt are in
-   `<RUNDIR>/attempt-1/`.
-2. Read that attempt's `report.md`.
-3. **Verify the acceptance checklist yourself** — actually run the tests, lint,
-   and type checks named in the packet; read the diff. Never pass on the report
-   alone. Check `scope.txt` too: exit code 3 means Codex succeeded but edited
-   files outside the allowlist, which is a failure even when every test passes.
-4. If anything fails, the scope check flags a violation, or Codex reports
-   "blocked": diagnose from `events.jsonl` / `stderr.log` / failing output,
-   write `.codex-instructions/<task>.hint-N.md` with the root cause + minimal
-   fix guidance, and continue Codex:
+   It reports each task as done (with its commit) or pending, and names the
+   next one. Exit 0 means the plan is finished — skip to step 7.
+
+2. Delegate the next task:
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/codex_resume.sh" <hint_file> <workdir> <RUNDIR>
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex_run.sh" <plan_dir>/T<N>.md <workdir>
    ```
-   Each call opens `<RUNDIR>/attempt-N+1/`; earlier attempts stay intact, so
-   read the one you just created. Loop back to step 2. Cap at 3 attempts, then
-   escalate to the user with every attempt's report and what you tried.
-5. When all acceptance items pass and the scope check is clean, summarize what
-   changed and deliver.
+   It picks up `T<N>.allowlist` by name. It also refuses to start on the
+   default branch or from a dirty tree — after the first task that means the
+   previous task committed cleanly, so a refusal here is real information.
+   Note the printed `RUNDIR`.
+
+3. Read `<RUNDIR>/attempt-1/report.md`.
+
+4. **Verify this task's acceptance checklist yourself** — actually run the
+   tests, lint and type checks it names; read the diff. Never pass on the
+   report alone. Check `scope.txt` too: exit code 3 means Codex succeeded but
+   edited files outside the allowlist, which is a failure even when the tests
+   are green.
+
+5. If anything fails, scope is violated, or Codex reports "blocked": diagnose
+   from `events.jsonl` / `stderr.log` / the failing output, write
+   `<plan_dir>/T<N>.hint-M.md` with the root cause and the **minimal** fix, and
+   continue Codex:
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex_resume.sh" <plan_dir>/T<N>.hint-M.md <workdir> <RUNDIR>
+   ```
+   Each call opens a new attempt directory; earlier attempts stay intact. Back
+   to step 3. Cap at 3 attempts for the task, then stop and escalate to the
+   user with every attempt's report and what you tried.
+
+6. Close the task out:
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex_commit.sh" <plan_dir> T<N> <workdir> <RUNDIR>
+   ```
+   This re-checks scope, runs the test gate, and makes exactly one commit — and
+   refuses to commit if either fails. A refusal is not something to work
+   around: it means the task is not done, so go back to step 5.
+
+   Then append to `<plan_dir>/interfaces.md` whatever this task established
+   that a later one will call: function signatures, types, endpoints, config
+   keys, file paths. The next task is a fresh Codex session and will not know
+   any of it otherwise.
+
+   Loop back to step 1.
+
+7. When every task is committed, run the **plan-level** acceptance checklist
+   from `packet.md` against the finished branch — the full suite, not the
+   per-task subset. Per-task gates prove each step; only this proves they
+   compose. Then summarize what changed, task by task, and deliver.
+
+## Single task packet
+
+Steps 2–5 only, with no commit gate. Use this for a one-off delegation that is
+too small to plan.

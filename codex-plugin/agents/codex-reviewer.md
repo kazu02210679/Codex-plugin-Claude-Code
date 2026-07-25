@@ -23,7 +23,12 @@ Method:
    A violation is a FAIL on its own. Then read the diff for what the gate cannot
    see: disabled or weakened tests, and anything that bypasses stated
    guardrails.
-5. Return a concise verdict:
+5. When reviewing a whole plan rather than one task, also check the shape of the
+   history: one commit per task, each with its `Codex-Task:` trailer. Several
+   commits for one task, one commit spanning several, or a missing trailer all
+   mean a gate was bypassed. `codex_status.sh <plan_dir> <workdir>` lists what
+   is committed and what is still pending.
+6. Return a concise verdict:
    - A table of acceptance item → PASS/FAIL with the command run and its result.
    - Overall: DELIVER, or SEND BACK with the specific failing items and the
      shortest description of what is wrong (so the orchestrator can write a

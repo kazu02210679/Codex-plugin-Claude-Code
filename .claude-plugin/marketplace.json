@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Personal Claude Code marketplace hosted in the Codex-plugin-Claude-Code repo.",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "codex-plugin",
       "source": "./codex-plugin",
-      "description": "Claude Code orchestrates; OpenAI Codex implements. Claude owns requirements, design direction, acceptance criteria and delivery judgment; Codex does code investigation, implementation design, coding, tests and reporting."
+      "description": "Claude Code orchestrates; OpenAI Codex implements. Claude owns requirements, design direction, acceptance criteria and delivery judgment; Codex does code investigation, implementation design, coding, tests and reporting. Work is split into tasks and committed one at a time, gated on a per-task file allowlist and a green test run."
     }
   ]
 }
