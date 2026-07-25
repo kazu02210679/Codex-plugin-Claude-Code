@@ -61,8 +61,8 @@
 # approval prompt; what Codex may read/write/run is governed entirely by
 # `--sandbox`. This wrapper needs four things from the CLI: a prompt, a working
 # directory, a sandbox level, and a way to capture the final message + JSON.
-# Run `codex exec --help` once against your installed version and adjust the
-# flags below if they differ.
+# Flags verified against codex-cli 0.144.6 — if your installed version's
+# `codex exec --help` disagrees, adjust the flags below to match.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

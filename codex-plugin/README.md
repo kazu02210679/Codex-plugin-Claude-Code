@@ -111,10 +111,13 @@ directly. After install, restart Claude Code so the commands/skill register.
 
 - **Codex CLI** installed and on `PATH`, authenticated (`OPENAI_API_KEY` or
   `codex login`). Codex billing/auth is separate from Claude's.
-- Verify flag names once with `codex exec --help`. The wrapper relies on:
-  `--cd`, `--sandbox`, `--output-last-message`, `--json`, `-m`. If your version
-  differs, adjust `scripts/codex_run.sh`. (`codex exec` is non-interactive, so
-  there is no approval flag — the `--sandbox` mode governs what Codex may touch.)
+- The wrapper relies on `--cd`, `--sandbox`, `--output-last-message`, `--json`,
+  `-m`, and on `resume [SESSION_ID] [PROMPT]` taking the exec-level options
+  before the subcommand — verified against codex-cli 0.144.6. If your version's
+  `codex exec --help` / `codex exec resume --help` disagrees, adjust
+  `scripts/codex_run.sh` and `codex_resume.sh` to match. (`codex exec` is
+  non-interactive, so there is no approval flag — `--sandbox` governs what
+  Codex may touch.)
 
 ## Usage
 
@@ -303,11 +306,16 @@ The suites drive the real scripts against a fake `codex` on `PATH`
 CLI, API key, or network. They cover each gate's refusals and the argument
 construction handed to the CLI. CI runs them plus `shellcheck` on every push.
 
-**Not covered:** the real Codex CLI's flag grammar. `codex exec`'s options are
-placed before the `resume` subcommand because that is where a subcommand's
-parent options belong, but this was not verified against an installed Codex —
-run `codex exec --help` and `codex exec resume --help` once against your
-version before trusting the hint loop unattended.
+**Not covered:** the fake CLI stands in for the real one's exit codes and event
+stream, not its argument grammar. That part was verified separately, by hand,
+against an installed CLI (codex-cli 0.144.6): `codex exec resume --help` lists
+no `--cd` or `--sandbox` of its own, confirming they belong before `resume`,
+where this wrapper places them; and a live two-turn run — first turn returns a
+`thread_id`, second turn resumes it with
+`codex exec --cd ... --sandbox ... --output-last-message ... --json resume <thread_id> <prompt>`
+— completed with the expected reply and `cached_input_tokens > 0`, confirming
+the resumed turn saw the first turn's context. If your installed version's
+`--help` output disagrees, trust the CLI over this README.
 
 ## Scope
 
