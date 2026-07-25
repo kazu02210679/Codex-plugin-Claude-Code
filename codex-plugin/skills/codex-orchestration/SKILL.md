@@ -186,25 +186,38 @@ isolated/container environment.
    and escalate to the user with: what is failing, what you tried, and your
    recommendation. Cite the attempts — they are all still on disk.
 
-## Phase 7 — Commit the task, then the next one
+## Phase 7 — Record the interfaces, commit, then the next task
+
+**First**, append to `<plan_dir>/interfaces.md` what this task established that
+a later task will call: signatures, types, endpoints, config keys, file paths.
+The next run injects it automatically.
+
+Do this *before* committing, not after. The commit stages this task's plan
+directory along with its code, so an interfaces entry written afterwards lands
+one commit late — attributed to the next task, and for the last task in a plan
+never committed at all, leaving the tree dirty when the work is supposedly
+finished.
+
+**Then** commit:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/codex_commit.sh" <plan_dir> T<N> <workdir> <RUNDIR>
 ```
 
 The run directory is required, not optional: it holds the pre-run commit and
-the frozen allowlist, and without them two of the three gates cannot run.
+the frozen contract, and without them most of the gates cannot run.
 
-It checks scope, runs the tests, checks scope **again** — tests write coverage
-files and snapshots, and a gate that only looked before the run would let
-`git add -A` sweep them in — then makes exactly one commit. Refusals: `1` tests
-failed or nothing changed, `3` out of scope, `5` HEAD moved during the task
-(something committed mid-run; Codex must not). A refusal means the task is not
-done — go back to Phase 6 rather than looking for a way around it.
+It checks that the plan has not changed since the run, checks scope, runs the
+tests, checks scope **again** — tests write coverage files and snapshots, and a
+gate that only looked beforehand would let them into the commit — then stages
+this task's product files and plan directory, and nothing else, and makes
+exactly one commit. Refusals: `1` tests failed or nothing changed, `3` out of
+scope, `6` the plan was edited between the run and the commit, `5` HEAD moved
+during the task (something committed mid-run; Codex must not). A refusal means
+the task is not done — go back to Phase 6 rather than looking for a way around
+it.
 
-Then append to `<plan_dir>/interfaces.md` what this task established that a
-later task will call: signatures, types, endpoints, config keys, file paths.
-The next run injects it automatically. Then back to Phase 4 for the next task.
+Then back to Phase 4 for the next task.
 
 When `codex_status.sh` reports every task committed, run the **plan-level**
 acceptance checklist from `packet.md` against the finished branch — the full

@@ -46,6 +46,7 @@ WORKDIR="$2"
 RUNDIR="$3"
 
 command -v codex >/dev/null 2>&1 || die "the 'codex' CLI is not installed or not on PATH."
+codex_require_hash || exit 2
 [ -f "$HINT" ]    || die "hint file not found: $HINT"
 [ -d "$WORKDIR" ] || die "workdir not found: $WORKDIR"
 [ -d "$RUNDIR" ]  || die "run directory not found: $RUNDIR (pass the RUNDIR printed by codex_run.sh)"
@@ -73,7 +74,11 @@ fi
 
 ATTEMPT="$RUNDIR/attempt-$N"
 PREV_REPORT="${4:-$PREV/report.md}"
-mkdir -p "$ATTEMPT"
+
+# NOTE: $ATTEMPT is deliberately NOT created yet. Attempts are counted by
+# directory, so creating one before the mode checks below have passed would
+# leave an empty attempt behind on a usage error and burn a slot off the cap
+# without Codex ever running.
 
 # The scope baseline is the pre-run commit of attempt 1: scope is judged over
 # the whole task, not just this attempt's incremental edits.
@@ -154,6 +159,9 @@ case "$CODEX_RESUME_MODE" in
     ;;
   *) die "unknown CODEX_RESUME_MODE: '$CODEX_RESUME_MODE' (expected auto|resume|last|fresh)" ;;
 esac
+
+# Every check that can reject this call has now run, so the attempt is real.
+mkdir -p "$ATTEMPT"
 
 printf 'codex_resume: continuing from attempt-%s\n  hint    : %s\n  mode    : %s%s\n  attempt : %s (cap %s)\n  scope   : %s\n' \
   "$LAST_N" "$HINT" "$MODE" "${THREAD_ID:+ [$THREAD_ID]}" "$ATTEMPT" "$MAX" "${ALLOWLIST:-(none)}" >&2

@@ -67,6 +67,23 @@ out=$("$S/codex_scope_check.sh" "$AL" "$E" "" 2>&1); rc=$?
 check "no-commits repo checks untracked only" "$rc" "1"
 has "catches untracked violation" "$out" "oops.txt"
 
+echo "== a gate that cannot tell must fail, not pass =="
+# An unresolvable base makes `git diff` fail. Swallowing that error would leave
+# only the untracked half running, and report a clean scope over an
+# arbitrarily large tracked-file diff.
+mkdir -p "$R/secret"; echo x >"$R/secret/keys.py"
+git -C "$R" add -A; git -C "$R" commit -qm secret
+echo TAMPERED >>"$R/secret/keys.py"
+out=$("$S/codex_scope_check.sh" "$AL" "$R" HEAD 2>&1); rc=$?
+check "tracked out-of-scope edit fails with a good base" "$rc" "1"
+out=$("$S/codex_scope_check.sh" "$AL" "$R" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2>&1); rc=$?
+check "unresolvable base refuses to give a verdict" "$rc" "2"
+hasnt "does not report OK" "$out" "scope: OK"
+has "explains the refusal" "$out" "does not resolve"
+out=$("$S/codex_scope_check.sh" "$AL" "$R" "not-a-ref" 2>&1); rc=$?
+check "garbage base refused" "$rc" "2"
+git -C "$R" checkout -- .
+
 echo "== usage errors =="
 : >"$TMPROOT/empty.allowlist"
 out=$("$S/codex_scope_check.sh" "$TMPROOT/empty.allowlist" "$R" 2>&1); rc=$?

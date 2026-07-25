@@ -82,12 +82,32 @@ if [ -z "$BASE" ]; then
   printf 'scope: note — no commits in %s yet; checking untracked files only\n' "$WORKDIR"
 fi
 
+TMPF=""; OTHERS=""
+trap 'rm -f "$TMPF" "$OTHERS"' EXIT
+
 raw=()
 if [ -n "$BASE" ]; then
+  # A safety gate that cannot tell must fail, not pass. A base ref that does
+  # not resolve — a truncated base_commit, the wrong run directory, a reviewer
+  # naming the wrong parent — makes `git diff` fail; swallowing that error
+  # would leave only the untracked-file half running and report a clean scope
+  # over an arbitrarily large tracked-file diff.
+  git -C "$WORKDIR" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null 2>&1 \
+    || die "base ref does not resolve to a commit in $WORKDIR: '$BASE'. Refusing to report a scope verdict from an incomplete diff."
+
   # -M turns renames into R entries carrying both paths; -z keeps paths with
   # spaces or newlines intact.
+  #
+  # Via a temp file, not `$(...)`: bash cannot hold NUL in a variable, so
+  # command substitution would silently strip every separator and collapse the
+  # whole listing into one meaningless path. A pipeline would hide git's exit
+  # status instead, which is the thing this gate must not do.
+  TMPF="$(mktemp)"
+  if ! git -C "$WORKDIR" diff -M --name-status -z "$BASE" -- >"$TMPF"; then
+    die "git diff against '$BASE' failed in $WORKDIR"
+  fi
   fields=()
-  mapfile -d '' -t fields < <(git -C "$WORKDIR" diff -M --name-status -z "$BASE" -- || true)
+  mapfile -d '' -t fields <"$TMPF"
   i=0
   while [ "$i" -lt "${#fields[@]}" ]; do
     st="${fields[$i]}"; i=$((i + 1))
@@ -108,9 +128,13 @@ fi
 
 # New files Codex created. Gitignored paths (including the run directory) are
 # excluded by --exclude-standard.
+OTHERS="$(mktemp)"
+if ! git -C "$WORKDIR" ls-files --others --exclude-standard -z >"$OTHERS"; then
+  die "git ls-files failed in $WORKDIR"
+fi
 while IFS= read -r -d '' f; do
   [ -n "$f" ] && raw+=("$f")
-done < <(git -C "$WORKDIR" ls-files --others --exclude-standard -z || true)
+done <"$OTHERS"
 
 # Drop orchestration metadata and de-duplicate.
 changed=()

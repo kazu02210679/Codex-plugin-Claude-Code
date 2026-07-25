@@ -167,6 +167,32 @@ out=$(CODEX_MAX_ATTEMPTS=0 FAKE_CODEX_TOUCH="src/a.py" \
   "$S/codex_resume.sh" "$P/T1.hint-1.md" "$R" "$RD" 2>&1); rc=$?
 check "cap can be lifted deliberately" "$rc" "0"
 
+echo "== resume: a rejected call must not burn an attempt =="
+# Attempts are counted by directory, so creating one before the mode checks
+# pass would leave an empty attempt behind and consume a slot off the cap
+# without Codex ever running.
+R="$(new_repo res6)"; P="$(new_plan "$R" auth)"
+FAKE_CODEX_TOUCH="src/a.py" "$S/codex_run.sh" "$P/T1.md" "$R" >/dev/null 2>&1
+RD="$(rundir_of "$R")"; printf 'hint\n' >"$P/T1.hint-1.md"
+: >"$RD/thread_id"
+CODEX_RESUME_MODE=resume "$S/codex_resume.sh" "$P/T1.hint-1.md" "$R" "$RD" >/dev/null 2>&1
+[ -d "$RD/attempt-2" ] && bad "empty attempt-2 left behind" || ok "no attempt left behind"
+CODEX_RESUME_MODE=bogus "$S/codex_resume.sh" "$P/T1.hint-1.md" "$R" "$RD" >/dev/null 2>&1
+[ -d "$RD/attempt-2" ] && bad "empty attempt-2 left behind" || ok "bad mode leaves nothing"
+FAKE_CODEX_TOUCH="src/a.py" "$S/codex_resume.sh" "$P/T1.hint-1.md" "$R" "$RD" >/dev/null 2>&1
+[ -d "$RD/attempt-2" ] && ok "a real resume still opens attempt-2" || bad "attempt-2 missing"
+
+echo "== the contract is frozen at run time =="
+R="$(new_repo res7)"; P="$(new_plan "$R" auth)"
+printf 'pytest -q\n' >"$P/T1.test"
+FAKE_CODEX_TOUCH="src/a.py" "$S/codex_run.sh" "$P/T1.md" "$R" >/dev/null 2>&1
+RD="$(rundir_of "$R")"
+for f in task.md allowlist test; do
+  [ -f "$RD/$f" ] && ok "frozen $f" || bad "missing frozen $f"
+done
+check "per-task test file wins" "$(cat "$RD/test")" "pytest -q"
+check "frozen packet matches" "$(cat "$RD/task.md")" "$(cat "$P/T1.md")"
+
 echo "== resume: scope baseline stays the task's start =="
 R="$(new_repo res5)"; P="$(new_plan "$R" auth)"
 FAKE_CODEX_TOUCH="src/a.py" "$S/codex_run.sh" "$P/T1.md" "$R" >/dev/null 2>&1

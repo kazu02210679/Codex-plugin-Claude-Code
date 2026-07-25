@@ -10,9 +10,11 @@ run_task() {
 }
 
 echo "== the gate refuses =="
-R="$(new_repo c1)"; P="$(new_plan "$R" auth)"
+# The plan is fixed before the run, because the commit gate judges against the
+# contract frozen at run time. Each case gets its own repo so a refused commit
+# does not leave the next one starting from a dirty tree.
+R="$(new_repo c1a)"; P="$(new_plan "$R" auth)"
 RD="$(run_task "$R" "$P" T1)"
-
 # The plan directory is untracked for the whole first task, so "did anything
 # happen?" has to be judged on product files alone.
 git -C "$R" checkout -- src 2>/dev/null
@@ -20,15 +22,16 @@ out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "no product change" "$rc" "1"
 has "explains why" "$out" "changed no product files"
 
+R="$(new_repo c1b)"; P="$(new_plan "$R" auth)"
 RD="$(run_task "$R" "$P" T1 "docs/d.md")"
 before=$(ncommits "$R")
 out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "out of scope" "$rc" "3"
 check "no commit made" "$(ncommits "$R")" "$before"
-git -C "$R" checkout -- .
 
-RD="$(run_task "$R" "$P" T1)"
+R="$(new_repo c1c)"; P="$(new_plan "$R" auth)"
 printf 'false\n' >"$P/test"
+RD="$(run_task "$R" "$P" T1)"
 before=$(ncommits "$R")
 out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "tests red" "$rc" "1"
@@ -36,7 +39,9 @@ check "no commit made" "$(ncommits "$R")" "$before"
 has "explains why" "$out" "test gate failed"
 
 echo "== the gate commits =="
-printf 'true\n' >"$P/test"
+R="$(new_repo c1d)"; P="$(new_plan "$R" auth)"
+RD="$(run_task "$R" "$P" T1)"
+before=$(ncommits "$R")
 out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "commits when green" "$rc" "0"
 check "exactly one new commit" "$(ncommits "$R")" "$((before + 1))"
@@ -54,8 +59,8 @@ echo "== scope is re-checked after the tests run =="
 # A test that writes coverage.xml would otherwise be swept in by `git add -A`,
 # because the only scope check happened before the test ran.
 R="$(new_repo c2)"; P="$(new_plan "$R" auth)"
-RD="$(run_task "$R" "$P" T1)"
 printf 'echo cov > coverage.xml\n' >"$P/test"
+RD="$(run_task "$R" "$P" T1)"
 before=$(ncommits "$R")
 out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "test-generated file caught" "$rc" "3"
@@ -73,8 +78,8 @@ check "detects a mid-task commit" "$rc" "5"
 has "names the expectation" "$out" "HEAD moved"
 
 echo "== test-gate policy =="
-R="$(new_repo c4)"; P="$(new_plan "$R" auth)"
-RD="$(run_task "$R" "$P" T1)"; rm "$P/test"
+R="$(new_repo c4)"; P="$(new_plan "$R" auth)"; rm "$P/test"
+RD="$(run_task "$R" "$P" T1)"
 out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "a missing test file is an error" "$rc" "2"
 has "explains the stance" "$out" "not a gate"
@@ -82,20 +87,58 @@ out=$(CODEX_ALLOW_NO_TESTS=1 "$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$
 check "override commits" "$rc" "0"
 
 R="$(new_repo c5)"; P="$(new_plan "$R" auth)"
-RD="$(run_task "$R" "$P" T1)"
 printf 'false\n' >"$P/test"; printf 'true\n' >"$P/T1.test"
+RD="$(run_task "$R" "$P" T1)"
 out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "per-task test overrides the default" "$rc" "0"
 
 R="$(new_repo c6)"; P="$(new_plan "$R" auth)"
-RD="$(run_task "$R" "$P" T1)"
 printf 'true\ntrue\nfalse\n' >"$P/test"
+RD="$(run_task "$R" "$P" T1)"
 out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "a later failing command still blocks" "$rc" "1"
+
+R="$(new_repo c6b)"; P="$(new_plan "$R" auth)"
 printf 'true # trailing\n\n# whole line\ntrue\n' >"$P/test"
+RD="$(run_task "$R" "$P" T1)"
 out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
 check "comments and blanks ignored" "$rc" "0"
 has "counts real commands" "$(git -C "$R" log -1 --format=%B)" "Codex-Tests: 2 command"
+
+echo "== staging is limited to this task's files =="
+# Metadata is excluded from the scope gate, so a repo-wide `git add -A` would
+# commit any OTHER plan's uncommitted files with nothing having checked them.
+R="$(new_repo c8)"; P="$(new_plan "$R" auth)"
+OTHER="$R/.codex-instructions/other-plan"; mkdir -p "$OTHER"
+echo "unrelated work in progress" >"$OTHER/scratch.md"
+RD="$(run_task "$R" "$P" T1)"
+out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
+check "commits" "$rc" "0"
+files="$(git -C "$R" show --name-only --format= HEAD)"
+has "this task's product file" "$files" "src/a.py"
+has "this task's plan" "$files" ".codex-instructions/auth/T1.md"
+hasnt "another plan's files stay out" "$files" "other-plan"
+has "the other plan is still uncommitted" "$(git -C "$R" status --porcelain)" "other-plan"
+
+echo "== the contract cannot change between run and commit =="
+R="$(new_repo c9)"; P="$(new_plan "$R" auth)"
+RD="$(run_task "$R" "$P" T1)"
+printf 'src/*\ndocs/*\n' >"$P/T1.allowlist"
+before=$(ncommits "$R")
+out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
+check "widened allowlist refused" "$rc" "6"
+has "names what moved" "$out" "T1.allowlist"
+check "no commit made" "$(ncommits "$R")" "$before"
+printf 'src/*\n' >"$P/T1.allowlist"
+
+# The test command is as much of the gate as the allowlist is.
+printf 'true\n# harmless comment\n' >"$P/test"
+out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
+check "swapped test commands refused" "$rc" "6"
+has "names what moved" "$out" "test commands"
+printf 'true\n' >"$P/test"
+out=$("$S/codex_commit.sh" "$P" T1 "$R" "$RD" 2>&1); rc=$?
+check "restoring the contract lets it through" "$rc" "0"
 
 echo "== a run directory is required =="
 R="$(new_repo c7)"; P="$(new_plan "$R" auth)"
@@ -110,7 +153,7 @@ out=$("$S/codex_status.sh" "$P" "$R" 2>&1); rc=$?
 check "tasks remain" "$rc" "3"
 has "T1 is next" "$out" "<- next"
 has "counts" "$out" "0/2 committed"
-has "names the plan" "$out" "[auth]"
+has "names the plan" "$out" "[auth-"
 
 RD="$(run_task "$R" "$P" T1)"
 "$S/codex_commit.sh" "$P" T1 "$R" "$RD" >/dev/null 2>&1
@@ -137,7 +180,16 @@ P2="$(new_plan "$R" billing)"
 out=$("$S/codex_status.sh" "$P2" "$R" 2>&1); rc=$?
 check "second plan starts from zero" "$rc" "3"
 has "counts" "$out" "0/2 committed"
-has "names the second plan" "$out" "[billing]"
+has "names the second plan" "$out" "[billing"
+
+echo "== status: a plan directory reused under the same name =="
+# A directory name is a display label. Rebuilding .codex-instructions/auth/ as
+# a new plan must not inherit the finished plan's task commits.
+rm -rf "$P"; P="$(new_plan "$R" auth)"
+out=$("$S/codex_status.sh" "$P" "$R" 2>&1); rc=$?
+check "rebuilt plan starts from zero" "$rc" "3"
+has "counts" "$out" "0/2 committed"
+hasnt "no task claimed as done" "$out" "done"
 
 echo "== status: ordering and edges =="
 R="$(new_repo s2)"; P="$(new_plan "$R" auth)"

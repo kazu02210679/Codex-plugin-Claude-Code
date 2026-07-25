@@ -67,24 +67,31 @@ mid-loop" mutually impossible.
   both paths — `git diff --name-only` reports only a rename's destination,
   which would let `git mv out-of-scope/x.py allowed/y.py` delete a protected
   file invisibly.
-- **plan integrity** — the gate reads a frozen copy of the allowlist taken
-  before the run, and a fingerprint over the plan directory is compared across
-  it. An allowlist Codex could widen mid-run, then pass, would not be a
-  constraint at all. Exit code `4`.
+- **plan integrity** — the task packet, its allowlist and its test commands are
+  copied into the run directory before the run, and the gates read those copies
+  rather than the live files. A task judged against an allowlist or a test
+  command that could be rewritten is not judged at all — by Codex during the
+  run (a fingerprint over the plan directory catches that, exit `4`) or by the
+  orchestrator between the run and the commit (exit `6`).
 - **commit gate** — `codex_commit.sh` runs the task's tests and refuses to
   commit unless they pass. One task, one commit; a task with no test command is
   an error rather than a free pass. Scope is re-checked *after* the tests,
-  since tests write coverage files and snapshots that `git add -A` would
-  otherwise sweep in. Exit code `5` if anything committed mid-task.
+  since tests write coverage files and snapshots that would otherwise be swept
+  in. Staging is limited to the product files the gate just cleared plus this
+  task's own plan directory — a repo-wide `git add -A` would contradict the
+  scope gate, which deliberately ignores metadata and so would never see
+  another plan's uncommitted files. Exit code `5` if anything committed
+  mid-task.
 - **attempt cap** — the hint loop stops at three attempts per task. A cap that
   lives only in prose is one an agent can lose track of, and each extra attempt
   is a full Codex run.
 - **status from git** — progress is read back from `Codex-Plan:` and
   `Codex-Task:` commit trailers, not from a status file or the orchestrator's
   memory. There is no second copy of the truth to drift, and a resumed session
-  can ask where the plan stands instead of guessing. Both trailers are matched:
-  task ids restart at `T1` for every plan, so a branch that already carried one
-  would otherwise report the next plan's first task as done.
+  can ask where the plan stands instead of guessing. Both trailers are matched
+  against the plan's `plan-id`: task ids restart at `T1` for every plan, and a
+  directory name is a display label that can be reused, so neither identifies a
+  plan on its own.
 
 ## Install
 
@@ -139,14 +146,19 @@ scripts/codex_commit.sh <plan_dir> <task_id> <workdir> <rundir>
 scripts/codex_scope_check.sh <allowlist_file> <workdir> [base_ref]
 ```
 
-Requires **bash 4.4+** (macOS ships 3.2 — `brew install bash`).
+Requirements: **bash 4.4+** (macOS ships 3.2 — `brew install bash`), git, and
+a SHA-256 tool — `sha256sum`, `shasum` or `openssl`, whichever is present.
+Beyond that only POSIX `find`, `sort` and `mktemp` are used, so no GNU
+coreutils dependency: the scripts run the same on macOS and Linux. A missing
+hash tool is an error, not a skipped integrity check.
 
 Exit codes: `0` clean, `2` usage/preflight error (nothing ran), `3` out of
-scope, `4` Codex edited the plan directory, `5` HEAD moved mid-task. For
-`codex_run.sh`/`codex_resume.sh` anything else is Codex's own exit code;
-`codex_commit.sh` uses `1` for "tests failed or nothing changed, no commit
-made". `codex_status.sh` returns `0` when the plan is finished and `3` while
-tasks remain.
+scope, `4` Codex edited the plan directory, `5` HEAD moved mid-task, `6` the
+plan changed between the run and the commit. For `codex_run.sh` /
+`codex_resume.sh` anything else is Codex's own exit code; `codex_commit.sh`
+uses `1` for "tests failed or nothing changed, no commit made".
+`codex_status.sh` returns `0` when the plan is finished and `3` while tasks
+remain.
 
 | Env | Default | Does |
 |---|---|---|
@@ -176,7 +188,10 @@ fresh run carrying the previous report rather than guessing.
 <workdir>/.codex-runs/<timestamp>/
 ├── .gitignore          # `*` — run output is local evidence, not repo content
 ├── base_commit         # pre-run commit; the scope-check baseline
-├── allowlist           # frozen copy of the task's allowlist
+├── task.md             # ┐
+├── allowlist           # ├ the frozen contract — what the gates judge against
+├── test                # ┘
+├── thread_id           # session to resume when a hint goes back
 ├── attempt-1/          # report.md, events.jsonl, stderr.log, meta.json, scope.txt
 ├── attempt-2/          # each hint→resume opens a new attempt
 └── ...
@@ -192,6 +207,7 @@ which is the point of capping it at three rather than silently retrying.
 
 ```
 .codex-instructions/<plan>/
+├── plan-id         immutable identity — what commit trailers are matched on
 ├── packet.md       plan-level requirement, scope, acceptance checklist
 ├── test            default test commands, one per line — the pre-commit gate
 ├── interfaces.md   contracts each finished task leaves for the next one
@@ -201,6 +217,11 @@ which is the point of capping it at three rather than silently retrying.
 ├── T1.hint-1.md    written by the orchestrator when task 1 gets stuck
 └── T2.md, T2.allowlist, ...
 ```
+
+Update `interfaces.md` **before** committing a task, not after: the commit
+stages this task's plan directory along with its code, so an entry written
+afterwards lands one commit late — and for the plan's last task, never lands at
+all.
 
 `interfaces.md` exists because each task is a separate `codex exec` with no
 memory of the last one. When a task establishes a signature, type, endpoint,

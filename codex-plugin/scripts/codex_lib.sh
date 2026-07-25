@@ -45,17 +45,65 @@ codex_is_meta_path() {
 # dirty preflight and by the "did this task actually do anything?" check, which
 # have to agree: with the plan directory always untracked during a run, a check
 # over the whole worktree can never see a clean tree and never sees a task that
-# did nothing.
+# did nothing. Also used to build the staging list, which is why renames are
+# expanded rather than detected: `--name-only` reports only a rename's
+# destination, so staging from it would leave the source's deletion behind.
 codex_dirty_product() {
   local wd="$1" base="${2:-HEAD}" f
   {
-    git -C "$wd" diff --name-only "$base" -- 2>/dev/null || true
+    git -C "$wd" diff --no-renames --name-only "$base" -- 2>/dev/null || true
     git -C "$wd" ls-files --others --exclude-standard 2>/dev/null || true
   } | LC_ALL=C sort -u | while IFS= read -r f; do
     [ -n "$f" ] || continue
     codex_is_meta_path "$f" && continue
     printf '%s\n' "$f"
   done
+}
+
+# codex_plan_id <plandir>
+# The plan's stable identity. A directory name is a display label, not an id:
+# deleting `.codex-instructions/auth/` and writing a new plan under the same
+# name would otherwise inherit the old plan's task commits and report its
+# first task as already finished. /codex-spec writes plan-id; the basename is
+# only a fallback for plans made before that existed.
+codex_plan_id() {
+  local d="$1"
+  if [ -s "$d/plan-id" ]; then
+    tr -d '[:space:]' <"$d/plan-id"
+  else
+    basename "$(cd -- "$d" && pwd)"
+  fi
+}
+
+# codex_test_file <plandir> <task_id>
+# The test commands that gate this task's commit, or nothing. Per-task file
+# wins over the plan default.
+codex_test_file() {
+  if   [ -f "$1/$2.test" ]; then printf '%s\n' "$1/$2.test"
+  elif [ -f "$1/test" ];    then printf '%s\n' "$1/test"
+  fi
+}
+
+# --- hashing ----------------------------------------------------------------
+# sha256sum is GNU coreutils; macOS ships shasum instead. Resolve once, and
+# fail loudly rather than silently skipping an integrity check.
+CODEX_HASH=()
+if command -v sha256sum >/dev/null 2>&1;   then CODEX_HASH=(sha256sum)
+elif command -v shasum >/dev/null 2>&1;    then CODEX_HASH=(shasum -a 256)
+elif command -v openssl >/dev/null 2>&1;   then CODEX_HASH=(openssl dgst -sha256)
+fi
+
+codex_require_hash() {
+  [ "${#CODEX_HASH[@]}" -gt 0 ] && return 0
+  printf 'codex: no SHA-256 tool found (looked for sha256sum, shasum, openssl).\n' >&2
+  printf '  The plan-integrity check cannot run without one.\n' >&2
+  return 1
+}
+
+# codex_hash_file <path> — hash of one file's contents, or the empty string.
+codex_hash_file() {
+  [ -f "$1" ] || { printf '\n'; return 0; }
+  "${CODEX_HASH[@]}" <"$1" | cut -d' ' -f1
 }
 
 # codex_meta_fingerprint <workdir>
@@ -65,8 +113,11 @@ codex_dirty_product() {
 codex_meta_fingerprint() {
   local d="$1/$CODEX_META_DIR"
   if [ ! -d "$d" ]; then printf 'absent\n'; return 0; fi
-  ( cd "$d" && find . -type f -print0 2>/dev/null | LC_ALL=C sort -z \
-      | xargs -0 -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1 )
+  # POSIX find + sort only: `sort -z` and `xargs -r` are GNU extensions that
+  # macOS does not have, and silently producing a different fingerprint there
+  # would turn the integrity check into noise.
+  ( cd "$d" && find . -type f -exec "${CODEX_HASH[@]}" {} + 2>/dev/null \
+      | LC_ALL=C sort | "${CODEX_HASH[@]}" | cut -d' ' -f1 )
 }
 
 # codex_thread_id <events.jsonl>

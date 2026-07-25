@@ -75,6 +75,7 @@ WORKDIR="$2"
 RUNDIR="${3:-"$WORKDIR/.codex-runs/$(date +%Y%m%d-%H%M%S)"}"
 
 command -v codex >/dev/null 2>&1 || die "the 'codex' CLI is not installed or not on PATH. Install it and authenticate (OPENAI_API_KEY or 'codex login') first."
+codex_require_hash || exit 2
 [ -f "$INSTRUCTION" ] || die "instruction file not found: $INSTRUCTION"
 [ -d "$WORKDIR" ]     || die "workdir not found: $WORKDIR"
 
@@ -144,10 +145,22 @@ mkdir -p "$ATTEMPT"
 printf '*\n' >"$RUNDIR/.gitignore"
 
 printf '%s' "$BASE_COMMIT" >"$RUNDIR/base_commit"
-# The gate reads this frozen copy, never the plan's live file: Codex can reach
-# the plan directory on disk, and an allowlist it can widen mid-run is not a
-# constraint. The fingerprint below catches the attempt as well.
+
+# --- freeze the contract ----------------------------------------------------
+# The gates read these copies, never the plan's live files. Codex can reach the
+# plan directory on disk, and a task judged against an allowlist or a test
+# command it could rewrite mid-run is not judged at all. Freezing all three
+# also lets codex_commit.sh detect the plan being edited between the run and
+# the commit, which the run-scoped fingerprint below cannot see.
+cp "$INSTRUCTION" "$RUNDIR/task.md"
 [ -z "$ALLOWLIST" ] || cp "$ALLOWLIST" "$RUNDIR/allowlist"
+
+TASK_ID="$(basename "$INSTRUCTION" .md)"
+FROZEN_TEST="$(codex_test_file "$PLAN_DIR" "$TASK_ID")"
+if [ -n "$FROZEN_TEST" ]; then
+  cp "$FROZEN_TEST" "$RUNDIR/test"
+  printf '%s' "$FROZEN_TEST" >"$RUNDIR/test_source"
+fi
 
 # --- assemble the prompt ----------------------------------------------------
 # Each task is a separate `codex exec` with no memory of the last one, so

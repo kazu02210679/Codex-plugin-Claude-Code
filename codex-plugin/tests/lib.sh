@@ -42,6 +42,7 @@ new_repo() {
 new_plan() {
   local p="$1/.codex-instructions/$2"
   mkdir -p "$p"
+  printf '%s-%s%s\n' "$2" "$(date +%s)" "$RANDOM" >"$p/plan-id"
   printf '# Add the token model\n\nDo the thing.\n' >"$p/T1.md"
   printf 'src/*\n'                                  >"$p/T1.allowlist"
   printf '# Wire the endpoint\n\nDo the next thing.\n' >"$p/T2.md"

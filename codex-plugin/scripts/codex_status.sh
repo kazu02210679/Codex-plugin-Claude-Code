@@ -66,7 +66,7 @@ if [ -n "$DEFAULT_BRANCH" ]; then
   [ -n "$BASE" ] && RANGE="$BASE..HEAD"
 fi
 
-PLAN_ID="$(basename "$(cd -- "$TASKDIR" && pwd)")"
+PLAN_ID="$(codex_plan_id "$TASKDIR")"
 
 declare -A sha_of=()
 declare -A subject_of=()

@@ -57,23 +57,28 @@ Arguments: `$ARGUMENTS`
    to step 3. The script refuses a fourth attempt — when it does, stop and
    escalate to the user with every attempt's report and what you tried.
 
-6. Close the task out:
+6. Record what this task established for later ones — function signatures,
+   types, endpoints, config keys, file paths — by appending to
+   `<plan_dir>/interfaces.md`. The next run injects it automatically; the next
+   task is a fresh Codex session and would not know any of it otherwise.
+
+   Do this **before** committing. The commit stages this task's plan directory
+   with its code, so an entry written afterwards lands one commit late — and
+   for the final task, never lands at all.
+
+7. Close the task out:
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex_commit.sh" <plan_dir> T<N> <workdir> <RUNDIR>
    ```
-   It checks scope, runs the tests, checks scope again, and makes exactly one
-   commit. Refusals: `1` tests failed or nothing changed, `3` out of scope, `5`
-   HEAD moved during the task. A refusal is not something to work around: it
-   means the task is not done, so go back to step 5.
-
-   Then append to `<plan_dir>/interfaces.md` whatever this task established
-   that a later one will call: function signatures, types, endpoints, config
-   keys, file paths. The next task is a fresh Codex session and will not know
-   any of it otherwise.
+   It checks the plan has not changed since the run, checks scope, runs the
+   tests, checks scope again, and makes exactly one commit. Refusals: `1` tests
+   failed or nothing changed, `3` out of scope, `5` HEAD moved during the task,
+   `6` the plan was edited since the run. A refusal is not something to work
+   around: it means the task is not done, so go back to step 5.
 
    Loop back to step 1.
 
-7. When every task is committed, run the **plan-level** acceptance checklist
+8. When every task is committed, run the **plan-level** acceptance checklist
    from `packet.md` against the finished branch — the full suite, not the
    per-task subset. Per-task gates prove each step; only this proves they
    compose. Then summarize what changed, task by task, and deliver.

@@ -15,6 +15,7 @@ $ARGUMENTS
 Write a plan directory `.codex-instructions/<short-plan-name>/`:
 
 ```
+plan-id          this plan's immutable identity (see below)
 packet.md        the plan: requirement, in/out of scope, plan-level acceptance
                  checklist, test policy, stuck protocol
 test             default test commands, one per line — the gate that runs
@@ -24,6 +25,17 @@ T1.md            instructions to Codex for task 1
 T1.allowlist     the files task 1 may touch
 T2.md, T2.allowlist, ...
 ```
+
+Write `plan-id` first, with a value that will never be reused:
+
+```bash
+printf '%s-%s\n' "<short-plan-name>" "$(date +%s)$RANDOM" > .codex-instructions/<plan>/plan-id
+```
+
+Progress is recovered by matching this id against commit trailers. A directory
+name is a display label, not an identity: replacing a finished
+`.codex-instructions/auth/` with a new plan under the same name would otherwise
+inherit the old plan's task commits and report its first task as already done.
 
 ## Splitting into tasks
 

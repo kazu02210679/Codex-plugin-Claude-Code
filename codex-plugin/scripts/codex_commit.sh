@@ -40,6 +40,7 @@
 #   2  usage / environment error
 #   3  changed files outside the task's allowlist — no commit was made
 #   5  HEAD moved during the task: something else committed — no commit made
+#   6  the plan changed between the run and this commit — no commit was made
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,17 +63,39 @@ RUNDIR="$4"
 git -C "$WORKDIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   || die "not a git repository: $WORKDIR"
 
+codex_require_hash || exit 2
+
 TASK_MD="$TASKDIR/$TASK_ID.md"
 [ -f "$TASK_MD" ] || die "task packet not found: $TASK_MD"
 
-# The frozen allowlist, not the plan's live file. Codex can reach the plan
-# directory on disk; an allowlist it could widen mid-run would not be a
-# constraint at all.
+# Everything the task is judged against comes from the frozen copies taken
+# before the run, never the plan's live files. Codex can reach the plan
+# directory on disk; a task judged against an allowlist or a test command it
+# could rewrite would not be judged at all.
 ALLOWLIST="$RUNDIR/allowlist"
 [ -f "$ALLOWLIST" ] || die "no frozen allowlist at $ALLOWLIST. codex_run.sh writes it — pass the run directory it printed, and give the task an allowlist."
 
-PLAN_ID="$(basename "$(cd -- "$TASKDIR" && pwd)")"
+PLAN_ID="$(codex_plan_id "$TASKDIR")"
 CODEX_TEST_TIMEOUT="${CODEX_TEST_TIMEOUT:-900}"
+
+# --- did the contract move between the run and this commit? -----------------
+# The run-scoped fingerprint only covers Codex's execution. Nothing stops the
+# plan being edited afterwards — which would commit work under a gate that is
+# not the one it was run against.
+drift=()
+[ "$(codex_hash_file "$TASK_MD")" = "$(codex_hash_file "$RUNDIR/task.md")" ] \
+  || drift+=("$TASK_ID.md")
+[ "$(codex_hash_file "$TASKDIR/$TASK_ID.allowlist")" = "$(codex_hash_file "$ALLOWLIST")" ] \
+  || drift+=("$TASK_ID.allowlist")
+LIVE_TEST="$(codex_test_file "$TASKDIR" "$TASK_ID")"
+[ "$(codex_hash_file "$LIVE_TEST")" = "$(codex_hash_file "$RUNDIR/test")" ] \
+  || drift+=("test commands")
+
+if [ "${#drift[@]}" -gt 0 ]; then
+  say "the plan changed since this task was run: ${drift[*]}"
+  say "Committing now would record the work under a different gate than the one it ran against. Re-run the task so the contract and the result match."
+  exit 6
+fi
 
 # --- did anything else commit while the task ran? ---------------------------
 # The whole point is one task, one commit. If Codex ran `git commit` itself, or
@@ -108,10 +131,9 @@ scope_gate() {
 scope_gate "before tests"
 
 # --- resolve test commands --------------------------------------------------
+# The frozen copy, matched against the live file above.
 TESTFILE=""
-if   [ -f "$TASKDIR/$TASK_ID.test" ]; then TESTFILE="$TASKDIR/$TASK_ID.test"
-elif [ -f "$TASKDIR/test" ];          then TESTFILE="$TASKDIR/test"
-fi
+[ -f "$RUNDIR/test" ] && TESTFILE="$RUNDIR/test"
 
 commands=()
 if [ -n "$TESTFILE" ]; then
@@ -126,7 +148,7 @@ fi
 
 if [ "${#commands[@]}" -eq 0 ]; then
   if [ "${CODEX_ALLOW_NO_TESTS:-0}" != "1" ]; then
-    die "no test commands for $TASK_ID (looked for $TASKDIR/$TASK_ID.test, $TASKDIR/test). A commit gate with no tests is not a gate — add one, or set CODEX_ALLOW_NO_TESTS=1 if this task genuinely has nothing to run."
+    die "no test commands for $TASK_ID (codex_run.sh looked for $TASKDIR/$TASK_ID.test, then $TASKDIR/test). A commit gate with no tests is not a gate — add one and re-run the task, or set CODEX_ALLOW_NO_TESTS=1 if it genuinely has nothing to run."
   fi
   say "warning: committing $TASK_ID with no test gate (CODEX_ALLOW_NO_TESTS=1)"
 fi
@@ -172,11 +194,25 @@ if [ -z "$SUBJECT" ]; then
   [ -n "$SUBJECT" ] || SUBJECT="$TASK_ID"
 fi
 
-# Scope is clean, so `-A` can only stage allowlisted product paths plus the
-# plan's own metadata — the hints and interfaces this task produced belong with
-# the task that produced them. `-A` also catches deletions, which an explicit
-# add of the allowlist would miss.
-git -C "$WORKDIR" add -A
+# Stage exactly two things: the product files the scope gate just cleared, and
+# this task's own plan directory. A repo-wide `git add -A` would contradict the
+# gate — metadata is excluded from the scope check, so any OTHER plan's
+# uncommitted files would be invisible to every check here and still land in
+# this commit. Pathspecs with -A still catch deletions.
+stage=()
+while IFS= read -r f; do
+  [ -n "$f" ] && stage+=("$f")
+done < <(codex_dirty_product "$WORKDIR" HEAD)
+
+WD_ABS="$(cd -- "$WORKDIR" && pwd)"
+TD_ABS="$(cd -- "$TASKDIR" && pwd)"
+case "$TD_ABS" in
+  "$WD_ABS") ;;
+  "$WD_ABS"/*) stage+=("${TD_ABS#"$WD_ABS"/}") ;;
+  *) say "note: $TASKDIR is outside the repository — the plan will not be committed with the task" ;;
+esac
+
+git -C "$WORKDIR" add -A -- "${stage[@]}"
 git -C "$WORKDIR" commit -q -F - <<EOF
 $SUBJECT
 
