@@ -225,6 +225,11 @@ suite, not the per-task subset. Per-task gates prove each step in isolation;
 only this proves they compose. Then summarize what changed, task by task, and
 deliver.
 
+That is where this skill stops. The branch stays local: pushing it or opening a
+pull request is a separate skill's job, and nothing here reaches the network.
+Hand over the branch name and the per-task summary rather than doing it
+yourself.
+
 ## Guardrails
 
 - Never let Codex's report substitute for your own verification.

@@ -309,9 +309,11 @@ parent options belong, but this was not verified against an installed Codex —
 run `codex exec --help` and `codex exec resume --help` once against your
 version before trusting the hint loop unattended.
 
-## Not covered
+## Scope
 
-Branch creation, worktree isolation, push and PR opening are left to you. The
-plugin refuses to run on the default branch but does not make the work branch
-for you, and it commits per task but never pushes — so the finished branch is
-yours to review before anything leaves the machine.
+This plugin ends at the last task's commit. It refuses to run on the default
+branch but does not create the work branch, and it never pushes — the finished
+branch stays local for review. Everything downstream of that (pushing, opening
+a pull request) is a separate skill's job, deliberately: what makes a commit
+admissible is not what makes a branch ready to publish, and keeping the gates
+here from reaching the network keeps this plugin's blast radius on disk.
