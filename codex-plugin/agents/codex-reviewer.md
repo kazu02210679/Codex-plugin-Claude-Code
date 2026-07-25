@@ -15,8 +15,14 @@ Method:
 3. For every acceptance item, run the real check yourself (tests, lint, type
    check, build, smoke command) and capture the actual output. A claim in
    `report.md` is never sufficient evidence.
-4. Inspect the diff for: scope creep (features not requested), disabled or
-   weakened tests, and anything that bypasses stated guardrails.
+4. Check file scope mechanically instead of judging it by eye — spotting an
+   unrequested file in a large diff is exactly what reading misses:
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex_scope_check.sh" <rundir>/allowlist <workdir> "$(cat <rundir>/base_commit)"
+   ```
+   A violation is a FAIL on its own. Then read the diff for what the gate cannot
+   see: disabled or weakened tests, and anything that bypasses stated
+   guardrails.
 5. Return a concise verdict:
    - A table of acceptance item → PASS/FAIL with the command run and its result.
    - Overall: DELIVER, or SEND BACK with the specific failing items and the
