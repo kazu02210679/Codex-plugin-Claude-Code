@@ -84,7 +84,11 @@ Env overrides: `CODEX_MODEL`, `CODEX_SANDBOX` (`read-only` | `workspace-write`
   and run commands within the workspace. Use `read-only` to trial without
   writes, and avoid `danger-full-access` outside an isolated/container env.
 - Claude **always re-verifies** the acceptance criteria by actually running the
-  checks; Codex's `report.md` is treated as a claim, not proof.
+  checks itself, comparing exit codes and pass/fail counts against what
+  `report.md` claims; the report is treated as a claim, not proof.
+- Safety-critical acceptance items block delivery on their own. When the
+  mechanism that would prove correctness cannot itself be verified, the skill
+  fails closed and produces no verdict.
 - Delegating spends tokens on both Claude and Codex. Small tasks may be cheaper
   done directly.
 
